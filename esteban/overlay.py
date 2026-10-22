@@ -391,8 +391,8 @@ class Launcher:
                 # The policy wants a layer surface but the typelib is not installed, so this is the fallback:
                 # a plain window, which the compositor decorates around the whole surface. Saying which part
                 # is missing is what makes the frame readable as a missing package rather than as the app's look.
-                warn("the layer-shell typelib is not installed, so the box is a plain window and the "
-                     "compositor draws its frame around it")
+                warn("the layer-shell typelib is not installed (gtk-layer-shell), so the box is a plain window "
+                     "and the compositor draws its frame and titlebar around it")
             self.window.set_position(Gtk.WindowPosition.CENTER)
 
     def rgba_visual(self):
@@ -408,12 +408,15 @@ class Launcher:
         provider = Gtk.CssProvider()
         provider.load_from_data(
             (".esteban-search { font-family: \"%s\"; font-size: %dpx; padding: %dpx %dpx; "
-             "background-color: transparent; color: %s; caret-color: %s; border: none; }\n"
+             "background-color: transparent; color: %s; caret-color: %s; border: none; "
+             # The theme draws a focus ring around the field, which is the rounded outline people see as a
+             # border around the box. The field is text on the panel, so the ring and the theme's shadow go too.
+             "outline-style: none; box-shadow: none; }\n"
               # The placeholder is the box's quiet voice: with the field empty it should read as the muted
               # subtext colour, not as text that has already been typed. GTK3 draws it on its own node, so the
               # rule is simply ignored on a version that does not have one.
               ".esteban-search placeholder { color: %s; }\n"
-              ".esteban-rows { background-color: transparent; border: none; }\n"
+              ".esteban-rows { background-color: transparent; border: none; outline-style: none; }\n"
              % (search["text"].get("font") or "Sans", search["text"]["size"],
                 search["paddingVertical"], search["paddingHorizontal"],
                 theme.css_color(search["text"]["color"]),
