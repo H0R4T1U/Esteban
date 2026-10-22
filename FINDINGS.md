@@ -3,7 +3,7 @@
 Report produced with REA (Ghidra 12.1.4 provider). Every claim below is tagged
 **[observed]** (returned by an REA tool from the shipped artifact), **[runtime]**
 (observed on the live system with OS tools, no REA Evidence ID), or **[inference]**
-(my interpretation). Each observed claim cites its REA Evidence ID.
+(the author's interpretation). Each observed claim cites its REA Evidence ID.
 
 Machine-readable copy of all evidence: `evidence/rea_evidence_bundle_full.json`
 (209 records; 184 ghidra, 14 composed-workflow, 7 sqlite, 2 analysis-view, 1 native-macos,
