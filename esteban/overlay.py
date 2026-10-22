@@ -879,6 +879,9 @@ class Launcher:
 
     def show(self) -> None:
         self.window.show_all()
+        # Ask for the size the content needs right after mapping, including the room for the shadow: on X11 the
+        # window can end up at its natural size, which is the panel without the shadow, if nothing asks for it.
+        self.update_height()
         try:
             self.window.present()           # ask for focus on a plain window; a layer surface gets it when mapped
         except Exception:
