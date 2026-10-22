@@ -26,6 +26,11 @@ DEFAULTS = {
         "options": {"showscrollbar": True, "hideshortcuts": False},
         "maxVisibleRows": 10,                 # AlfredSelectionList._maxVisibleRows
         "position": {"anchor": "top", "margin": 140},
+        # Not an Alfred key. The measured window colour is #1E1E22E6 (alpha 0.90) drawn over an
+        # NSVisualEffectView blur, and GTK has no blur, so on a compositor that cannot blur the
+        # measured alpha reads as a flat film over the wallpaper. "theme" keeps the measured value;
+        # "off" or a number 0-1 overrides it.
+        "transparency": "theme",
     },
     "advanced": {"shortcutmod": 1, "latching": True},
     "features": {

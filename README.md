@@ -54,6 +54,7 @@ From the live theme JSON and the decompiled formulas:
 | shortcut fade | rows 6/7/8 → alpha 0.5 / 0.3 / 0.1 when > 9 rows are visible | `shortcut_alpha()` |
 | text column | drawRect x = 32 px (`iconPaddingHorizontal + icon + 1`) | `text_column_x()` |
 | action modifier | `advanced.shortcutmod` 1 → Control, otherwise Command/Super | `config["advanced"]["shortcutmod"]` |
+| panel alpha | window colour `#1E1E22E6` → 0.90, drawn over `NSVisualEffectView` blur (`blur` key 0) | `window_alpha()` |
 
 ## Architecture
 
@@ -112,7 +113,7 @@ Local REA working files — the `evidence/` JSON exports, the live-database copi
 pip install ".[overlay,hotkey]"             # esteban + PyGObject (overlay) + pynput (X11 hotkey)
 sudo dnf install gtk-layer-shell            # Fedora: the layer-shell typelib
 sudo apt install gtk-layer-shell            # Debian / Ubuntu / Pop!_OS: the same
-sudo pacman -S python-gobject python-cairo gobject-introspection   # Arch / CachyOS
+sudo pacman -S python-gobject python-cairo gobject-introspection gtk3 pango   # Arch / CachyOS (gtk3 and pango carry the typelibs)
 sudo dnf install wl-clipboard ydotool       # Wayland clipboard + simulated paste
 sudo apt install wl-clipboard ydotool       # the same on deb-based systems
 sudo pacman -S wl-clipboard ydotool         # the same on Arch
@@ -198,6 +199,30 @@ never destroyed after it has been unmapped, and quitting leaves the main loop in
 the window — closing the display connection ends the session cleanly, so no commit is ever sent on
 a roleless surface.
 
+### Transparency
+
+The measured window colour is `#1E1E22E6`, alpha 0.90, and Alfred draws it over an
+`NSVisualEffectView` blur while the theme's own `blur` key is 0. GTK has no blur, so on a compositor
+that cannot blur (COSMIC, Mutter) the same colour is a flat translucent film: over a busy wallpaper
+the panel reads muddy, and the rounded corners let the desktop show through.
+
+`appearance.transparency` controls it, and `esteban theme` prints the value in effect:
+
+| Value | Effect |
+|---|---|
+| `"theme"` (default) | the measured alpha, 0.90 |
+| `"off"` | opaque panel — what the same colours read as on a compositor without blur |
+| `0`–`1` | the alpha to use |
+
+Compositors that blur (KWin, Hyprland with a blur plugin) keep the measured value and look closer to
+Alfred. On COSMIC the practical setting is `off`, or something near `0.96`. Only the panel behind the
+rows changes; the row, selection, text and border colours stay as measured.
+
+```json
+// ~/.esteban/config.json
+{ "appearance": { "transparency": "off" } }
+```
+
 ### Global hotkey
 
 Wayland compositors own global keys, so bind the key in the compositor and point it at
@@ -207,11 +232,25 @@ with pynput.
 
 **COSMIC**: COSMIC Settings → Keyboard → Custom Shortcuts, add a shortcut whose command is
 `esteban toggle`. The same list is plain text at
-`~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom`, one entry per line:
+`~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom`, and in that file the command and
+its arguments are two separate strings:
 
 ```text
-(modifiers: [Alt], key: "Space"): Spawn("esteban toggle")
+(
+    modifiers: [
+        Alt,
+    ],
+    key: "Space",
+): Spawn("/home/you/.local/bin/esteban", "toggle"),
 ```
+
+An entry written as `Spawn("esteban toggle")` tries to exec a program named `esteban toggle`, which is
+why a hand-written shortcut can look like the key does nothing. `esteban keybind` prints the entry for
+the configured combo using the resolved launcher path; `esteban keybind --write` appends it to that
+file. It only edits the file when it is already the list the settings UI writes, and the previous
+contents are kept in `~/.esteban/` rather than beside the file — every file under `/v1/` is read as a
+config key, so a backup there breaks the whole reload. After writing, cosmic-settings-daemon has to
+read the file again (relogin, or restart the settings daemon).
 
 `Super` already opens the COSMIC launcher, so pick a free key. `esteban doctor` prints the
 instructions for the session it is run in.
@@ -272,15 +311,16 @@ Themes: `~/.esteban/themes/<name>.json` in Alfred's theme JSON schema (`alfredth
 python3 tests/test_core.py
 ```
 
-Sixteen tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
+Eighteen tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
 count, strong latching, 30-day window), clipboard behaviours (dedupe, fastAppend, limit,
 moveToTopOnUse, persistence), the workflow `info.plist` / script-filter item contract, the theme
 geometry formulas, the action numbers and the visible-row mapping for number keys, the surface
 policy per compositor (COSMIC and GNOME get a plain window, wlroots-derived compositors get
 layer-shell, X11 a normal window, no display the TUI), the reason the results box reports when it
-cannot be drawn, the typelib lookup `doctor` prints, the toggle IPC round-trip, the row contract
-shared by the TUI and the overlay, the environment report, and the fact that a missing helper
-prints one line instead of raising.
+cannot be drawn, the typelib lookup `doctor` prints, the panel alpha override, the COSMIC keybind
+entry and its writer (RON list only, existing entries kept, nothing left beside the settings file),
+the toggle IPC round-trip, the row contract shared by the TUI and the overlay, the environment
+report, and the fact that a missing helper prints one line instead of raising.
 
 ## Notes and limits
 

@@ -7,6 +7,8 @@
     esteban toggle         show/hide the running instance — the target of a Wayland
                                 compositor keybinding
     esteban daemon         hotkey daemon (pynput on X11, compositor keybinding on Wayland)
+    esteban keybind [--write]  print the keybinding for this session; --write appends it to the
+                                 COSMIC custom-shortcuts file
     esteban watch          clipboard watcher (mirrors Alfred's clipboard history)
     esteban index          rebuild the app + file indexes
     esteban search <q>     non-interactive search
@@ -88,6 +90,11 @@ def main(argv=None) -> int:
 
         return run_daemon(cfg)
 
+    if cmd == "keybind":
+        from .hotkey import keybind
+
+        return keybind(cfg, write=("--write" in argv[1:] or "--install" in argv[1:]))
+
     if cmd == "doctor":
         print(doctor.report(cfg))
         return 0
@@ -115,6 +122,9 @@ def main(argv=None) -> int:
               f"(theme roundness capped at 4 in drawRect: 0xa0b44)")
         print(f"scrollbar: thickness {t['scrollbar']['thickness']}, radius {theme.scrollbar_roundness(t)}")
         print(f"shortcut fade: rows 6/7/8 -> 0.5/0.3/0.1 when more than 9 rows are visible")
+        setting = cfg["appearance"].get("transparency", "theme")
+        print(f"transparency: panel alpha {theme.window_alpha(t, cfg):.3f} "
+              f"(appearance.transparency = {setting}; the measured window colour is {t['window']['color']})")
         return 0
 
     con = store.connect()

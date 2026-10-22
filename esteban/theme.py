@@ -98,6 +98,26 @@ def parse_color(value: str) -> tuple[float, float, float, float]:
     return tuple(int(s[i:i + 2], 16) / 255.0 for i in (0, 2, 4, 6))
 
 
+def window_alpha(t: dict, cfg: dict | None = None) -> float:
+    """Panel alpha for the results box.
+
+    `appearance.transparency` accepts `"theme"` (the measured value, 0.90 from `#1E1E22E6`),
+    `"off"`, or a number between 0 and 1. Alfred draws this panel over an `NSVisualEffectView`
+    blur; GTK has no blur, so the measured alpha reads as a flat translucent film over the
+    wallpaper on a compositor that cannot blur (COSMIC, Mutter). On those sessions 1.0 is what
+    makes the same colours read correctly, and wlroots compositors with blur plugins keep the
+    measured value.
+    """
+    value = ((cfg or {}).get("appearance", {}) or {}).get("transparency", "theme")
+    if isinstance(value, (int, float)):
+        return min(max(float(value), 0.0), 1.0)
+    if str(value).strip().lower() in ("theme", "measured"):
+        return parse_color(t["window"]["color"])[3]
+    if str(value).strip().lower() in ("off", "none", "opaque", "solid"):
+        return 1.0
+    raise ValueError(f"bad transparency: {value}")
+
+
 def css_color(value: str) -> str:
     r, g, b, a = parse_color(value)
     return f"rgba({round(r * 255)}, {round(g * 255)}, {round(b * 255)}, {a:.3f})"

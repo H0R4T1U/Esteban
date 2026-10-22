@@ -355,7 +355,8 @@ class Launcher:
     def draw_window(self, widget, cr):
         t = self.theme["window"]
         w, h = widget.get_allocated_width(), widget.get_allocated_height()
-        cr.set_source_rgba(*theme.parse_color(t["color"]))
+        r, g, b, _ = theme.parse_color(t["color"])
+        cr.set_source_rgba(r, g, b, theme.window_alpha(self.theme, self.cfg))
         rounded_rect(cr, 0, 0, w, h, t["roundness"])
         cr.fill()
         if t.get("borderPadding"):

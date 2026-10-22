@@ -12,21 +12,27 @@ stored under `local.hotkey.default` 0x203b5c. Linux has no client-side equivalen
 Default is Alt+Space, mirroring Alfred's Option+Space.
 
 COSMIC: COSMIC Settings > Keyboard > Custom Shortcuts runs a command, and the same list is stored
-as plain text at ~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom, one entry per
-line, e.g. `(modifiers: [Super], key: "Space"): Spawn("esteban toggle")`. Super already opens
-the COSMIC launcher, so pick a free key (Super+F12, Alt+Space, ...) for esteban.
+as plain text at ~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom. In that file the
+command and its arguments are two separate strings — `Spawn("/home/you/.local/bin/esteban",
+"toggle")` — so an entry written as `Spawn("esteban toggle")` execs a program named
+`esteban toggle` and looks like the key does nothing. `esteban keybind` prints the entry, and
+`esteban keybind --write` appends it. Super already opens the COSMIC launcher, so pick a free key
+(Alt+Space, Super+F12, ...).
 """
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
 from . import compositor, ipc
-from .config import warn
+from .config import DATA_DIR, load_config, warn
 
 MOD_ALIASES = {"alt", "ctrl", "shift", "cmd", "meta", "super"}
+RUST_MOD_NAMES = {"alt": "Alt", "ctrl": "Ctrl", "shift": "Shift", "cmd": "Cmd", "meta": "Meta",
+                  "super": "Super"}
 COSMIC_SHORTCUTS_FILE = Path.home() / ".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom"
 
 
@@ -50,6 +56,38 @@ def is_wayland() -> bool:
     return compositor.detect()["server"] == "wayland"
 
 
+def spawn_command() -> str:
+    """Absolute path of the launcher.
+
+    COSMIC execs the first string in `Spawn(...)` as the program, so the keybinding has to name the
+    file, not a shell line: `Spawn("/home/you/.local/bin/esteban", "toggle")`. A bare `esteban`
+    depends on the PATH the compositor was started with, which a systemd user service or a login
+    shell does not always share.
+    """
+    found = shutil.which("esteban")
+    if found:
+        return found
+    if os.environ.get("ESTEBAN_BIN"):
+        return os.environ["ESTEBAN_BIN"]
+    warn("esteban is not on PATH — install it (`pip install .`) so the keybinding can name a file")
+    return "esteban"
+
+
+def cosmic_entry(cfg: dict, command: str | None = None) -> str:
+    """One entry in the format cosmic-settings writes to the custom-shortcuts file.
+
+    Command and arguments are two separate strings in that RON list, and the modifiers are the Rust
+    key names (`Alt`, `Ctrl`, `Shift`, `Super`), which is why a hand-written entry using a single
+    string with a space inside it does nothing.
+    """
+    combo = cfg["hotkey"]["default"]
+    mods, key = parse_combo(f"{combo['mod']}+{combo['key']}")
+    command = command or spawn_command()
+    modifiers = ", ".join(RUST_MOD_NAMES[m] for m in sorted(mods)) or "Super"
+    key_name = key if len(key) == 1 else key.title()
+    return f'(modifiers: [{modifiers}], key: "{key_name}"): Spawn("{command}", "toggle")'
+
+
 def instructions(combo: str) -> str:
     """Where to bind the key in this session, one line per possibility."""
     session = compositor.detect()
@@ -65,10 +103,10 @@ def instructions(combo: str) -> str:
     if name == "COSMIC":
         lines.append("  COSMIC:     COSMIC Settings > Keyboard > Custom Shortcuts, add a shortcut whose command is")
         lines.append("              esteban toggle (the same list is plain text at")
-        lines.append(f"              {COSMIC_SHORTCUTS_FILE}, one entry per line, like:")
-        modifier = ", ".join(m.title() for m in sorted(mods)) or "Super"
-        key_name = key.title() or key
-        lines.append(f'              (modifiers: [{modifier}], key: "{key_name}"): Spawn("esteban toggle")')
+        lines.append(f"              {COSMIC_SHORTCUTS_FILE}, like:")
+        cfg = load_config()
+        lines.append("              " + cosmic_entry(cfg))
+        lines.append("              or run `esteban keybind --write`")
     elif name == "Hyprland":
         lines.append("  Hyprland:   binds = ALTSPACE, exec = esteban toggle")
     elif name == "Sway":
@@ -80,6 +118,80 @@ def instructions(combo: str) -> str:
     else:
         lines.append("  wlroots-derived compositors: bind the key to run esteban toggle")
     return "\n".join(lines)
+
+
+def _present(text: str, entry: str) -> bool:
+    """Same entry, whatever spacing cosmic-settings wrote it with."""
+    return " ".join(entry.split()) in " ".join(text.split())
+
+
+def write_keybind(cfg: dict) -> int:
+    """Append the entry to the COSMIC custom-shortcuts file.
+
+    Two rules come from how cosmic-settings-daemon reads that directory: every file under `/v1/` is
+    treated as a config key, so a backup left beside the entry file becomes a bogus key and breaks
+    the whole reload — the copy is kept in `~/.esteban/`. And the file is only edited when it is
+    already the RON list the settings UI writes; nothing is guessed, because a malformed list is
+    dropped on reload.
+    """
+    path = COSMIC_SHORTCUTS_FILE
+    entry = cosmic_entry(cfg)
+
+    if not path.exists():
+        warn(f"{path} does not exist yet. Open COSMIC Settings > Keyboard > Custom Shortcuts once "
+             "so the settings daemon creates the file, then run `esteban keybind --write` again.")
+        return 1
+
+    text = path.read_text()
+    if _present(text, entry):
+        print(f"already in {path}: {entry}")
+        return 0
+
+    body = text.strip()
+    if not (body.startswith("[") and body.endswith("]")):
+        warn(f"{path} is not the list cosmic-settings writes, so nothing was changed. Add the "
+             f"shortcut in COSMIC Settings instead: command {spawn_command()}, argument toggle.")
+        return 1
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    backup = DATA_DIR / "custom-shortcuts.bak"
+    try:
+        backup.write_text(text)
+    except OSError as exc:
+        warn(f"could not keep a copy in {backup} ({exc}); writing anyway")
+
+    head = body[:-1].rstrip().rstrip(",")
+    updated = f"{head}\n    {entry}\n" if head not in ("", "[") else f"[\n    {entry}\n"
+    try:
+        path.write_text(updated + "]")
+    except OSError as exc:
+        warn(f"could not write {path} ({exc})")
+        return 1
+
+    print(f"added to {path}:")
+    print(f"    {entry}")
+    print("cosmic-settings-daemon has to read the file again: log out and back in, or restart the "
+          "settings daemon. The key only works while an instance is listening, so start "
+          "`esteban daemon` at session start.")
+    print(f"previous contents kept at {backup}")
+    return 0
+
+
+def keybind(cfg: dict, write: bool = False) -> int:
+    """Print the keybinding for this session, and write it when asked."""
+    combo = cfg["hotkey"]["default"]
+    spec = f"{combo['mod']}+{combo['key']}"
+    print(instructions(spec))
+    print(f"\nkey: {spec} -> esteban toggle")
+    print(f"launcher: {spawn_command()}")
+    print(f"socket:   {ipc.socket_path()} ({'instance listening' if ipc.send('ping') is not None else 'nothing listening'})")
+
+    if not write:
+        return 0
+    if compositor.detect()["compositor"] != "COSMIC":
+        warn("only the COSMIC settings file is written; other compositors need their own config")
+        return 1
+    return write_keybind(cfg)
 
 
 def spawn_launcher(cfg: dict) -> None:

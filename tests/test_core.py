@@ -313,6 +313,57 @@ def test_doctor_locates_the_typelib():
             os.environ["GI_TYPELIB_PATH"] = old
 
 
+def test_transparency_override():
+    """The measured panel alpha is 0.90 from #1E1E22E6; appearance.transparency overrides it."""
+    from esteban import config, theme
+
+    t = {"window": {"color": "#1E1E22E6"}}
+    assert theme.window_alpha(t, config.DEFAULTS) == 230 / 255            # the measured value
+    assert theme.window_alpha(t, {"appearance": {"transparency": "theme"}}) == 230 / 255
+    assert theme.window_alpha(t, {"appearance": {"transparency": "off"}}) == 1.0
+    assert theme.window_alpha(t, {"appearance": {"transparency": 0.75}}) == 0.75
+    assert theme.window_alpha(t, {"appearance": {"transparency": 2}}) == 1.0
+    assert theme.window_alpha(t, None) == 230 / 255
+
+
+def test_keybind_entry_and_writer():
+    """COSMIC stores the shortcut as a list where command and arguments are separate strings."""
+    import tempfile
+
+    from pathlib import Path
+
+    from esteban import config, hotkey
+
+    cfg = {key: (value.copy() if isinstance(value, dict) else value) for key, value in config.DEFAULTS.items()}
+    entry = hotkey.cosmic_entry(cfg, "/usr/local/bin/esteban")
+    assert entry == '(modifiers: [Alt], key: "Space"): Spawn("/usr/local/bin/esteban", "toggle")'
+
+    d = Path(tempfile.mkdtemp())
+    v1 = d / "v1"
+    v1.mkdir()
+    shortcuts = v1 / "custom"
+    shortcuts.write_text('[\n    (modifiers: [Super], key: "F12"): Spawn("/usr/bin/notify-send", "hi"),\n]')
+
+    old_file, old_data, old_command = hotkey.COSMIC_SHORTCUTS_FILE, hotkey.DATA_DIR, hotkey.spawn_command
+    hotkey.COSMIC_SHORTCUTS_FILE, hotkey.DATA_DIR = shortcuts, d / "esteban"
+    hotkey.spawn_command = lambda: "/usr/local/bin/esteban"          # the writer uses the resolved path
+    try:
+        assert hotkey.write_keybind(cfg) == 0
+        text = shortcuts.read_text()
+        assert entry in text
+        assert "notify-send" in text                                   # existing entries kept
+        assert hotkey.write_keybind(cfg) == 0                          # running it twice changes nothing
+        assert shortcuts.read_text() == text
+        assert list(v1.iterdir()) == [shortcuts]                       # nothing left beside the file
+        assert (d / "esteban" / "custom-shortcuts.bak").exists()       # the copy lives outside /v1/
+
+        shortcuts.write_text("not a list")
+        assert hotkey.write_keybind(cfg) == 1
+        assert shortcuts.read_text() == "not a list"                   # guessed formats are not written
+    finally:
+        hotkey.COSMIC_SHORTCUTS_FILE, hotkey.DATA_DIR, hotkey.spawn_command = old_file, old_data, old_command
+
+
 def test_missing_helper_does_not_raise():
     """A missing xdg-open must print one line, not crash the action path."""
     import sqlite3
