@@ -119,6 +119,14 @@ sudo apt install wl-clipboard ydotool       # the same on deb-based systems
 sudo pacman -S wl-clipboard ydotool         # the same on Arch
 ```
 
+Installing is what makes `esteban` available outside the project directory. Without it the package only
+runs from the checkout (`python3 -m esteban.main ...` from the project root), and anything that has to
+name a file — a desktop shortcut, a systemd user service, an autostart entry — cannot use a bare
+`esteban`, because it is execed with the PATH the compositor or systemd was started with, not the login
+shell's. `bin/esteban` is the alternative for an uninstalled checkout: it resolves its own location, puts
+the project root on `sys.path`, and works from any directory, so an absolute path to it is a valid target.
+`esteban keybind` uses it when nothing is on PATH and says which path it wrote.
+
 ### If `esteban` falls back to the TUI
 
 `esteban doctor` prints the reason it takes the terminal path; the usual ones:
@@ -271,7 +279,8 @@ Three things in that file are easy to get wrong, and each one makes the key look
 - keys are stored as lowercase keysym names (`"space"`, `"4"`, `"dollar"`) with function keys as written
   (`"F12"`), so a capitalised `"Space"` never matches
 - the program has to be named as a file, because the entry is execed with the compositor's PATH, not a
-  shell's
+  shell's — `esteban keybind` uses the installed launcher, or `bin/esteban` of the checkout when nothing
+  is installed, and prints which one it used
 
 `esteban keybind` prints the entry for the configured combo with the resolved launcher path, says
 whether that entry is already in the file, and whether an instance is answering on the socket.
@@ -357,7 +366,7 @@ Themes: `~/.esteban/themes/<name>.json` in Alfred's theme JSON schema (`alfredth
 python3 tests/test_core.py
 ```
 
-Eighteen tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
+Nineteen tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
 count, strong latching, 30-day window), clipboard behaviours (dedupe, fastAppend, limit,
 moveToTopOnUse, persistence), the workflow `info.plist` / script-filter item contract, the theme
 geometry formulas, the action numbers and the visible-row mapping for number keys, the surface
@@ -365,7 +374,8 @@ policy per compositor (COSMIC and GNOME get a plain window, wlroots-derived comp
 layer-shell, X11 a normal window, no display the TUI), the reason the results box reports when it
 cannot be drawn, the typelib lookup `doctor` prints, the panel alpha override, the COSMIC keybind entry
 (lowercase keysym names, two-argument `Spawn`) and its writer (RON map only, existing entries kept,
-nothing left beside the settings file), the toggle IPC round-trip, the row contract shared by the TUI
+nothing left beside the settings file), the launcher path being a real file when nothing is installed,
+the toggle IPC round-trip, the row contract shared by the TUI
 and the overlay, the environment report, and the fact that a missing helper prints one line instead of
 raising.
 

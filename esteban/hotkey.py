@@ -35,6 +35,7 @@ MOD_ALIASES = {"alt", "ctrl", "shift", "cmd", "meta", "super"}
 RUST_MOD_NAMES = {"alt": "Alt", "ctrl": "Ctrl", "shift": "Shift", "cmd": "Cmd", "meta": "Meta",
                   "super": "Super"}
 COSMIC_SHORTCUTS_FILE = Path.home() / ".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom"
+CHECKOUT_LAUNCHER = Path(__file__).resolve().parent.parent / "bin" / "esteban"
 
 
 def parse_combo(spec: str):
@@ -64,13 +65,25 @@ def spawn_command() -> str:
     file, not a shell line: `Spawn("/home/you/.local/bin/esteban", "toggle")`. A bare `esteban`
     depends on the PATH the compositor was started with, which a systemd user service or a login
     shell does not always share.
+
+    When the package is not installed, this names `bin/esteban` of the checkout instead: that script
+    resolves its own location and puts the project root on sys.path, so an absolute path to it works
+    from any directory. Installing is still the durable answer, because a keybinding that points at a
+    checkout breaks the moment the checkout moves.
     """
     found = shutil.which("esteban")
     if found:
         return found
     if os.environ.get("ESTEBAN_BIN"):
         return os.environ["ESTEBAN_BIN"]
-    warn("esteban is not on PATH — install it (`pip install .`) so the keybinding can name a file")
+    if CHECKOUT_LAUNCHER.exists():
+        if not os.access(CHECKOUT_LAUNCHER, os.X_OK):
+            warn(f"{CHECKOUT_LAUNCHER} is not executable — run `chmod +x bin/esteban`")
+        warn(f"esteban is not on PATH, so the entry names {CHECKOUT_LAUNCHER}; "
+             f"`pip install \".[overlay]\"` is the durable fix")
+        return str(CHECKOUT_LAUNCHER)
+    warn("esteban is not on PATH and this is not a checkout, so nothing can be named — install it "
+         "(`pip install .`) and run `esteban keybind` again")
     return "esteban"
 
 

@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Runs esteban from a source checkout, so a keybinding can name a file without installing anything.
+
+A desktop shortcut execs the path it is given, so the entry has to name a real file. `pip install .`
+puts `esteban` on PATH; this script is the alternative for a checkout that is not installed: it resolves
+its own location, puts the project root on sys.path, and then works from any directory and from any
+interpreter that can import the package.
+
+    chmod +x bin/esteban
+    bind the key to: /absolute/path/to/checkout/bin/esteban toggle
+"""
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from esteban.main import cli
+
+if __name__ == "__main__":
+    cli()
