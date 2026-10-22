@@ -64,7 +64,9 @@ DEFAULTS = {
             "limit": 200,
             "interval": 1.0,               # seconds, clipboard/prefs.plist `interval` (checkPasteboard polling)
             "persistFor": 604800,          # seconds (features.clipboard.persistFor)
-            "fastAppend": True,
+            # Alfred has this as an option; it is off here so every copy is its own history entry. With it on,
+            # consecutive copies from the same app are appended to the row that app is building.
+            "fastAppend": False,
             "fastAppendSeparator": "\n",
             "moveToTopOnUse": True,
             "blacklist": [],               # app names whose copies are ignored

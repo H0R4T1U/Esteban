@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from esteban import calculator, fuzzy, placeholders, snippets, store
+from esteban import calculator, config, fuzzy, placeholders, snippets, store
 from esteban.fuzzy import fuzzy_like, score
 
 
@@ -89,6 +89,12 @@ def test_snippets_and_clipboard():
     clipboard.record(con, " more", "test-app", cfg)
     assert con.execute("SELECT COUNT(*) FROM clipboard").fetchone()[0] == 2
     assert clipboard.history(con)[0][1] == "second\n more"
+
+    # the shipped default is fastAppend off, so every copy is its own entry instead of one merged blob
+    assert config.DEFAULTS["features"]["clipboard"]["fastAppend"] is False
+    cfg["features"]["clipboard"]["fastAppend"] = False
+    clipboard.record(con, "another copy", "test-app", cfg)
+    assert len(clipboard.history(con)) == 3
 
     # limit enforcement
     cfg["features"]["clipboard"]["limit"] = 2
@@ -238,6 +244,7 @@ def test_panel_corners_depend_on_the_session_alpha():
         cr = cairo.Context(surface)
         launcher = object.__new__(overlay.Launcher)
         launcher.theme, launcher.alpha, launcher.rgba = theme.DEFAULT_THEME, 1.0, rgba
+        launcher.results, launcher.max_visible, launcher.query = [], 10, ""   # draw_window asks the content how tall the panel is
         launcher.draw_window(Alloc(60, 40), cr)
         return surface.get_data()[0]
 
@@ -872,6 +879,7 @@ def test_toggle_opens_on_the_main_page():
     launcher.con, launcher.cfg, launcher.results, launcher.sel, launcher.offset = con, cfg, [], 0, 0
     launcher.entry, launcher.area, launcher.policy = Entry(), Area(), "toplevel"
     launcher.theme, launcher.max_visible = theme.load_theme({}), 10     # update_height sizes the panel from these
+    launcher.follows_content = True
     launcher.panel_width = 600
     launcher.show = lambda: None                        # no display in the test
     launcher.mode, launcher.query, launcher.entry.text = "clipboard", "old", "old"
@@ -1000,21 +1008,33 @@ def test_an_empty_query_shows_nothing():
 
 def test_the_box_is_as_tall_as_the_rows_it_shows():
     """`visibleRows = min(numberOfRows, _maxVisibleRows)` decides the panel height, so before anything is typed
-    the window is the search field and there is no placeholder to draw."""
+    the window is the search field and there is no placeholder to draw. On a compositor that cannot resize a
+    mapped surface (COSMIC) the window keeps room for the rows and the panel is drawn only over the content."""
     import cairo
 
-    from esteban import overlay, theme
+    from esteban import compositor, overlay, theme
 
     if not overlay.HAVE_GTK:
         return
 
     t = theme.load_theme({})
     row_h = theme.row_height(t)
+    box_h = t["window"]["paddingVertical"] * 2 + theme.search_field_height(t) + t["search"]["spacing"]
     drawn = []
 
     class Area:
         def set_size_request(self, width, height):
             self.request = (width, height)
+
+        def queue_draw(self):
+            pass
+
+    class Window:
+        def __init__(self):
+            self.size = None
+
+        def resize(self, width, height):
+            self.size = (width, height)             # a compositor that honours a client resize records it here
 
     class Layout:
         def set_text(self, text, n=-1):
@@ -1033,18 +1053,44 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
         def get_allocated_width(self):
             return 600
 
+        def get_allocated_height(self):
+            return box_h + row_h * 10
+
     launcher = object.__new__(overlay.Launcher)
     launcher.theme, launcher.max_visible, launcher.results = t, 10, [{"type": "app"}] * 25
     launcher.query, launcher.mode, launcher.options, launcher.mod_name = "", "search", {}, "Ctrl"
     launcher.sel, launcher.offset, launcher.area = 0, 0, Area()
+    launcher.window, launcher.rgba, launcher.alpha = Window(), True, 1.0
     launcher.panel_width = t["window"]["width"] - 2 * t["window"]["paddingHorizontal"]
+    launcher.session = {"compositor": "Sway", "policy": "layer-shell"}
+    launcher.follows_content = True
     launcher.update_height()
     assert launcher.area.request == (launcher.panel_width, row_h * 10)   # capped by maxVisibleRows
+    assert launcher.window.size == (t["window"]["width"], box_h + row_h * 10)
 
     launcher.results = []
     launcher.update_height()
     assert launcher.area.request == (launcher.panel_width, 0)            # nothing typed: the box is the field
+    assert launcher.content_height() == box_h
 
+    # COSMIC keeps the size a surface was mapped at, so the window keeps room for the rows there and the panel
+    # is drawn only over the content, which is what makes the box follow the results.
+    launcher.session = {"compositor": "COSMIC", "policy": "toplevel"}
+    launcher.follows_content = launcher.session["compositor"] not in compositor.NO_CLIENT_RESIZE_COMPOSITORS
+    launcher.area.set_size_request(launcher.panel_width, row_h * launcher.max_visible)   # what the constructor asks for
+    launcher.results = [{"type": "app"}] * 2
+    launcher.update_height()
+    assert launcher.area.request == (launcher.panel_width, row_h * 10)
+    panels = []
+    old_rounded = overlay.rounded_rect
+    overlay.rounded_rect = lambda cr, x, y, w, h, r: panels.append(h)
+    try:
+        launcher.draw_window(Widget(), cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, row_h)))
+        assert panels == [box_h + row_h * 2]                              # the panel is the content, not the window
+    finally:
+        overlay.rounded_rect = old_rounded
+
+    launcher.results = []
     old_layout, old_show = overlay.make_layout, overlay.PangoCairo.show_layout
     overlay.make_layout = lambda cr, spec: Layout()
     overlay.PangoCairo.show_layout = lambda cr, layout: None
@@ -1054,7 +1100,7 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
 
         launcher.query = "xyz"
         launcher.update_height()
-        assert launcher.area.request == (launcher.panel_width, row_h)    # room for the "No results" line
+        assert launcher.content_height() == box_h + row_h         # room for the "No results" line
         drawn.clear()
         launcher.draw_rows(Widget(), cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, row_h)))
         assert drawn == ["Ctrl+C", "No results"]

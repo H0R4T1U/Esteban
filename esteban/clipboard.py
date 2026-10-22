@@ -3,7 +3,8 @@
 Behavior copied from REA evidence in AlfredClipboardManager:
   - insert into clipboard (item, ts, app, apppath, datatype, datahash) values (?, ?, ?, ?, ?, ?)
   - dedupe by dataHash (`delete from clipboard where dataHash = ?`)
-  - fastAppend merges consecutive copies into the latest row
+  - fastAppend merges consecutive copies into the row the same app is building; it is off by default, so each
+    copy is its own entry
   - moveToTopOnUse: UPDATE clipboard SET ts = ? WHERE rowid = ?
   - expiry: DELETE FROM clipboard WHERE ts < ? AND dataType = ?
   - checkPasteboard: changeCount polling with lastClipHash, so a copy is recorded on the turn that notices

@@ -38,6 +38,12 @@ LAYER_SHELL_COMPOSITORS = {
 # Compositors where a launcher is better off as a plain window.
 TOPLEVEL_COMPOSITORS = {"COSMIC", "GNOME"}
 
+# Measured on a live COSMIC session: a plain toplevel keeps the size the compositor gave it when it was
+# mapped, so the client cannot change it afterwards (a `resize` request and a changed size request are both
+# ignored). The box therefore has to be mapped with room for its rows there and draw its panel only over the
+# content, which is what `overlay.py` does when the session is in this set.
+NO_CLIENT_RESIZE_COMPOSITORS = {"COSMIC"}
+
 
 def detect(env: dict | None = None) -> dict:
     """The session: compositor name, display server, and the surface policy to use."""

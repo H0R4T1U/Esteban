@@ -328,10 +328,15 @@ class Launcher:
 
         self.area = Gtk.DrawingArea()
         self.area.set_app_paintable(True)         # the panel behind the rows is drawn by draw_window, not by the system theme
-        # The panel height is the rows it shows (`update_height`), so before anything has been typed the box is
-        # the search field. The content width stays requested so the rows fill the panel.
+        # The content width stays requested so the rows fill the panel. The height is the rows the box shows
+        # (`update_height`), so before anything has been typed it is just the search field — except on a
+        # compositor that cannot change a mapped surface's size (COSMIC, measured), where the window keeps the
+        # height it was mapped at and has to be mapped with room for the rows from the start; there the panel is
+        # drawn only over the content (`draw_window`) so the box still follows the results.
         self.panel_width = window["width"] - 2 * window["paddingHorizontal"]
-        self.area.set_size_request(self.panel_width, 0)
+        self.follows_content = session.get("compositor") not in compositor.NO_CLIENT_RESIZE_COMPOSITORS
+        self.area.set_size_request(self.panel_width,
+                                   0 if self.follows_content else theme.row_height(self.theme) * self.max_visible)
 
         # `search.spacing` (8 px) is the measured gap between the field and the first row; the window
         # padding (11 x 12) is the content inset, so nothing sits flush against the panel edge.
@@ -434,9 +439,26 @@ class Launcher:
     def quit(self) -> None:
         Gtk.main_quit()
 
+    def visible_rows(self) -> int:
+        """`visibleRows = min(numberOfRows, _maxVisibleRows)`."""
+        rows = min(len(self.results), self.max_visible)
+        if not rows and self.query:
+            rows = 1                        # a typed query that matches nothing keeps one row of height
+        return rows
+
+    def content_height(self) -> int:
+        """The height the content needs: paddings + the field + the gap + the rows it shows."""
+        t = self.theme
+        return (t["window"]["paddingVertical"] * 2 + theme.search_field_height(t)
+                + t["search"]["spacing"] + theme.row_height(t) * self.visible_rows())
+
     def draw_window(self, widget, cr):
         t = self.theme["window"]
         w, h = widget.get_allocated_width(), widget.get_allocated_height()
+        if self.rgba:
+            # Only the part the content fills is painted, so the box reads as the search field plus the rows
+            # it has rather than a tall empty panel: the rest of the surface stays transparent.
+            h = min(h, self.content_height())
         r, g, b, _ = theme.parse_color(t["color"])
         cr.set_source_rgba(r, g, b, self.alpha)
         if self.alpha >= 1.0 and not self.rgba:
@@ -473,16 +495,20 @@ class Launcher:
         self.update_height()
 
     def update_height(self) -> None:
-        """`visibleRows = min(numberOfRows, _maxVisibleRows)` decides how tall the panel is.
+        """The box is as tall as the rows it shows, so it starts as the search field.
 
-        The box was requested at the full `maxVisibleRows` height, so it opened as a tall empty panel before
-        anything had been typed. With nothing typed there is nothing to draw and the window is the search field;
-        a typed query that matches nothing still has a row of height for the "No results" line.
+        Where the compositor lets the client change the size of a mapped surface the size request does it and a
+        `resize` is asked for as well; on COSMIC both are ignored after mapping (measured), so the window is
+        mapped with room for `maxVisibleRows` and `draw_window` paints the panel only over the content instead —
+        which is what makes the box follow the number of results there.
         """
-        rows = min(len(self.results), self.max_visible)
-        if not rows and self.query:
-            rows = 1
-        self.area.set_size_request(self.panel_width, theme.row_height(self.theme) * rows)
+        if self.follows_content:
+            self.area.set_size_request(self.panel_width, theme.row_height(self.theme) * self.visible_rows())
+        try:
+            self.window.resize(self.theme["window"]["width"], self.content_height())
+        except Exception:
+            pass
+        self.area.queue_draw()
 
     def set_query(self, query: str) -> None:
         self.query = query
