@@ -289,6 +289,30 @@ def test_doctor():
         assert key in text
 
 
+def test_doctor_locates_the_typelib():
+    """The typelib is a system file, so the report has to show where it is or that it is absent."""
+    import os
+    import tempfile
+    from pathlib import Path
+
+    from esteban import doctor
+
+    d = Path(tempfile.mkdtemp()) / "girepository-1.0"
+    d.mkdir()
+    (d / "Gtk-3.0.typelib").write_text("")
+
+    old = os.environ.get("GI_TYPELIB_PATH")
+    os.environ["GI_TYPELIB_PATH"] = str(d)
+    try:
+        assert doctor._typelib("Gtk-3.0") == str(d / "Gtk-3.0.typelib")
+        assert "missing" in doctor._typelib("PangoCairo-1.0")
+    finally:
+        if old is None:
+            os.environ.pop("GI_TYPELIB_PATH", None)
+        else:
+            os.environ["GI_TYPELIB_PATH"] = old
+
+
 def test_missing_helper_does_not_raise():
     """A missing xdg-open must print one line, not crash the action path."""
     import sqlite3

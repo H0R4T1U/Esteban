@@ -41,13 +41,20 @@ PI = 3.141592653589793
 
 try:
     import gi
-    gi.require_version("Gtk", "3.0")
+
+    # Every namespace is pinned before it is imported. Without a pin gi loads whichever version is
+    # in the typelib path and warns ("Gtk was imported without specifying a version first"), so on a
+    # GTK4-only machine the version actually loaded is not the one the drawing code expects.
+    for _namespace, _version in (("GLib", "2.0"), ("Gdk", "3.0"), ("GdkPixbuf", "2.0"),
+                                 ("Gtk", "3.0"), ("Pango", "1.0"), ("PangoCairo", "1.0")):
+        gi.require_version(_namespace, _version)
+
     from gi.repository import GLib, Gdk, GdkPixbuf, Gtk, Pango, PangoCairo
     HAVE_GTK = True
     GI_ERROR = ""
 except Exception as exc:
     # Two failures that look identical from outside: PyGObject itself is missing (pip),
-    # or the system package carrying the Gtk-3.0 typelib is missing. They need different fixes,
+    # or the system package carrying the typelibs is missing. They need different fixes,
     # so keep the message and let `doctor` show it.
     HAVE_GTK = False
     GI_ERROR = str(exc) or type(exc).__name__
@@ -92,7 +99,8 @@ def fallback_note(cfg: dict) -> str:
         return unavailable_reason()
     session = compositor.detect()
     if session["policy"] == compositor.NONE:
-        return "no display session"
+        return ("no display session (no WAYLAND_DISPLAY and no DISPLAY here) — the overlay needs a "
+                "graphical session; a user service started before login does not see it")
     return ""
 
 
@@ -124,7 +132,7 @@ def visible_row_for_action(action: int, offset: int, count: int) -> int | None:
 
 def run(cfg: dict | None = None, con=None, bind_hotkey: bool = False) -> bool:
     """Show the results box; returns False when no window can be used (caller falls back to the TUI)."""
-    if not HAVE_GTK:
+    if not available():
         return False
     cfg = cfg or load_config()
     session = compositor.detect()

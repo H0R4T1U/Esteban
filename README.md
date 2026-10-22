@@ -130,11 +130,37 @@ sudo pacman -S wl-clipboard ydotool         # the same on Arch
   on the system, and the venv must be the one that runs `esteban`.
 - **pycairo (or cairocffi) is missing** — `PangoCairo` and the drawing path need it. The `cairo`
   line in `doctor` shows this separately from PyGObject.
-- **A different Python is running.** `python3 -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk"` in the same interpreter `esteban` uses (`which esteban`).
+- **A different Python is running.** A venv or pipx environment cannot see the system `python3-gi`
+  at all, so inside it only `pip install pygobject pycairo` works; otherwise create the venv with
+  `--system-site-packages`. `doctor` prints `interpreter` and, when it is inside a venv, says this.
+  Check the same interpreter `esteban` uses: `which esteban`, then
+  `python3 -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk; print('ok')"`.
+- **A namespace pin failed, which is what the warning means.** `overlay.py` pins every namespace
+  before importing it (`GLib 2.0`, `Gdk 3.0`, `GdkPixbuf 2.0`, `Gtk 3.0`, `Pango 1.0`,
+  `PangoCairo 1.0`). If gi says a namespace "was imported without specifying a version first", the
+  pin for it failed and gi loaded whatever version the typelib path had — usually Gtk 4.0 on a
+  system that only carries GTK4. Every pin has to resolve for the overlay to draw:
+
+  ```bash
+  python3 - <<'EOF'
+  import gi
+  for ns, v in (("GLib", "2.0"), ("Gdk", "3.0"), ("GdkPixbuf", "2.0"),
+                ("Gtk", "3.0"), ("Pango", "1.0"), ("PangoCairo", "1.0")):
+      try:
+          gi.require_version(ns, v)
+          print(f"{ns} {v}: ok")
+      except ValueError as exc:
+          print(f"{ns} {v}: {exc}")
+  EOF
+  ```
+
 - **No `WAYLAND_DISPLAY` in the environment of the process.** A systemd user service starts before
   the session exports it, so the daemon comes up headless and only listens. `esteban doctor` from
   inside the session shows `policy none`; start the daemon in the session, or export the variable
   once per login: `systemctl --user import-environment WAYLAND_DISPLAY`.
+
+`doctor` also prints `GI_TYPELIB_PATH`, `interpreter` and the path of the `Gtk-3.0` / `PangoCairo-1.0`
+typelibs it would load, so the missing package is named instead of guessed.
 
 ```bash
 esteban index          # build the XDG app index and file index
@@ -246,14 +272,15 @@ Themes: `~/.esteban/themes/<name>.json` in Alfred's theme JSON schema (`alfredth
 python3 tests/test_core.py
 ```
 
-Fifteen tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
+Sixteen tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
 count, strong latching, 30-day window), clipboard behaviours (dedupe, fastAppend, limit,
 moveToTopOnUse, persistence), the workflow `info.plist` / script-filter item contract, the theme
 geometry formulas, the action numbers and the visible-row mapping for number keys, the surface
 policy per compositor (COSMIC and GNOME get a plain window, wlroots-derived compositors get
 layer-shell, X11 a normal window, no display the TUI), the reason the results box reports when it
-cannot be drawn, the toggle IPC round-trip, the row contract shared by the TUI and the overlay, the
-environment report, and the fact that a missing helper prints one line instead of raising.
+cannot be drawn, the typelib lookup `doctor` prints, the toggle IPC round-trip, the row contract
+shared by the TUI and the overlay, the environment report, and the fact that a missing helper
+prints one line instead of raising.
 
 ## Notes and limits
 

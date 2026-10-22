@@ -14,6 +14,7 @@ import os
 import platform
 import shutil
 import sys
+from pathlib import Path
 
 from . import clipboard, compositor, ipc, overlay, store
 from .config import DATA_DIR, load_config
@@ -21,6 +22,14 @@ from .config import DATA_DIR, load_config
 
 def checks(cfg: dict) -> list[tuple[str, str]]:
     rows = [("python", sys.version.split()[0]), ("platform", f"{platform.system()} {platform.release()}")]
+
+    # Which interpreter is actually running matters: a venv or pipx environment cannot see the
+    # system python3-gi, so `pip install pygobject` in that venv is the only way it can work there.
+    rows.append(("interpreter", sys.executable))
+    if sys.prefix != sys.base_prefix:
+        rows.append(("venv", f"{sys.prefix} — system PyGObject is not visible from it "
+                             "(pip install pygobject pycairo inside it, or recreate it with "
+                             "--system-site-packages)"))
 
     session = compositor.detect()
     rows.append(("compositor", session["compositor"]))
@@ -30,6 +39,12 @@ def checks(cfg: dict) -> list[tuple[str, str]]:
     # interface
     rows.append(("overlay (PyGObject)", "yes" if overlay.available() else f"no — {overlay.unavailable_reason()}"))
     rows.append(("cairo", "yes" if overlay.HAVE_CAIRO else "no — pip install pycairo"))
+    if not overlay.HAVE_GTK:
+        # `pip install pygobject` only gives the bindings; the namespaces come from these files,
+        # which are installed by the system GTK package. Printing the path settles which one is missing.
+        rows.append(("GI_TYPELIB_PATH", os.environ.get("GI_TYPELIB_PATH") or "not set (default dirs)"))
+        rows.append(("Gtk-3.0 typelib", _typelib("Gtk-3.0")))
+        rows.append(("PangoCairo typelib", _typelib("PangoCairo-1.0")))
     shell = "yes" if overlay.HAVE_SHELL else "no — install gtk-layer-shell"
     if session["policy"] != compositor.LAYER_SHELL:
         shell += f" (not used: policy is {session['policy']})"
@@ -68,6 +83,22 @@ def _display(session: dict) -> str:
     if session["server"] == "x11":
         return env["DISPLAY"]
     return "no DISPLAY and no WAYLAND_DISPLAY"
+
+
+TIPELIB_DIRS = ("/usr/lib/girepository-1.0", "/usr/share/gir-1.0",
+                "/usr/lib/x86_64-linux-gnu/girepository-1.0",
+                "/usr/lib/aarch64-linux-gnu/girepository-1.0",
+                "/usr/lib64/girepository-1.0")
+
+
+def _typelib(name: str) -> str:
+    """Where gi would load this namespace from, or a note that the package carrying it is missing."""
+    dirs = [d for d in os.environ.get("GI_TYPELIB_PATH", "").split(":") if d] + list(TIPELIB_DIRS)
+    for d in dirs:
+        path = Path(d) / f"{name}.typelib"
+        if path.exists():
+            return str(path)
+    return f"not found — the system package that provides {name} is missing"
 
 
 def _has(module: str) -> bool:
