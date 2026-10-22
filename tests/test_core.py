@@ -947,6 +947,32 @@ def test_the_watcher_records_the_pasteboard_on_the_turn_that_notices_a_change():
     con.close()
 
 
+def test_fast_append_continues_the_item_the_app_is_building():
+    """`fastAppend` 0x29da78 merges consecutive copies, and each row keeps the app that made the copy.
+
+    A copy from another app starts its own row instead of being added to the item an app is building: on this
+    session the copies the watcher sees have no source app to name, so the app column is the only thing that
+    says which copies belong together.
+    """
+    import sqlite3
+
+    from esteban import clipboard
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+    cfg = {"features": {"clipboard": {"enabled": True, "limit": 200, "fastAppend": True,
+                                      "fastAppendSeparator": "\n"}}}
+
+    clipboard.record(con, "first line", "firefox", cfg)
+    clipboard.record(con, "second line", "firefox", cfg)          # the same app continues the item
+    assert [r[1] for r in clipboard.history(con)] == ["first line\nsecond line"]
+
+    clipboard.record(con, "from another app", "notes", cfg)       # a different app starts its own row
+    assert [r[1] for r in clipboard.history(con)] == ["from another app", "first line\nsecond line"]
+    con.close()
+
+
 def test_an_empty_query_shows_nothing():
     """Alfred's default results come from what you type, so an empty box shows nothing until the first character.
 

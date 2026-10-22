@@ -198,10 +198,11 @@ def record(con: sqlite3.Connection, text: str, app: str = "", cfg: dict | None =
     h = content_hash(text)
     if con.execute("SELECT 1 FROM clipboard WHERE dataHash = ?", (h,)).fetchone():
         con.execute("delete from clipboard where dataHash = ?", (h,))
-    # fastAppend: merge into latest item
+    # fastAppend merges consecutive copies into the latest item, and the item belongs to the app that is
+    # building it: a copy from a different app starts its own row instead of being added to another app's item.
     if cfg.get("fastAppend"):
-        row = con.execute("SELECT rowid, item FROM clipboard ORDER BY ts DESC LIMIT 1").fetchone()
-        if row and app and row[1]:
+        row = con.execute("SELECT rowid, item, app FROM clipboard ORDER BY ts DESC LIMIT 1").fetchone()
+        if row and app and row[1] and row[2] == app:
             sep = cfg.get("fastAppendSeparator", "\n")
             new = row[1] + sep + text
             con.execute("UPDATE clipboard SET item = ?, ts = ? WHERE rowid = ?", (new, time.time(), row[0]))
