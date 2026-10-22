@@ -109,10 +109,11 @@ def x11_through_xwayland(session: dict, has_typelib: bool = HAVE_SHELL,
     """Whether the box should be an X11 window on a Wayland session.
 
     A layer-shell policy is only a surface the client can build when the typelib is present. Without it the
-    alternative that keeps the look is XWayland: GTK3 sets the Motif no-decorations hint on an X11 window, and on
-    a live COSMIC session cosmic-comp left that window with no titlebar and no outline, and the client could
-    change its size afterwards (the window followed the rows, 117 -> 214 -> 117 px). A plain Wayland toplevel
-    gets neither, so the X11 window is the fallback before the decorated window is.
+    alternative that keeps the geometry is XWayland: on a live COSMIC session an X11 window lost its titlebar,
+    because cosmic-comp honoured the Motif no-decorations hint GTK3 sets, and the client could change its size
+    afterwards (the window followed the rows, 117 -> 214 -> 117 px). The outline cosmic-comp draws around the
+    focused window is not something a client can decline, so the X11 window is the fallback for the size, not for
+    the decorations.
     """
     x11_display = x11_display if x11_display is not None else os.environ.get("DISPLAY")
     return session.get("policy") == compositor.LAYER_SHELL and not has_typelib and bool(x11_display)
@@ -147,8 +148,9 @@ def run(cfg: dict | None = None, con=None, bind_hotkey: bool = False) -> bool:
     if x11_through_xwayland(session):
         # GDK chooses its backend when it is initialized, so the fallback has to be decided before init_check.
         os.environ.setdefault("GDK_BACKEND", "x11")
-        warn("the layer-shell typelib is not installed, so the box is an X11 window through XWayland: it has no "
-             "titlebar or frame there and it can follow its rows. Install gtk-layer-shell for the layer surface.")
+        warn("the layer-shell typelib is not installed, so the box is an X11 window through XWayland: cosmic-comp "
+             "honours the no-decorations hint there and draws no titlebar, but it still outlines the window. "
+             "Install gtk-layer-shell for a surface that is not decorated at all.")
 
     if not Gtk.init_check():
         warn("Gtk cannot be initialized in this session — using the terminal launcher")
@@ -343,6 +345,7 @@ class Launcher:
         self.pixbuf_cache = {}
         self.rgba = False                       # set by build(), draw_window uses it for the corners
         self.shadow_margin = int(cfg["appearance"].get("shadow", 0))   # 0 on a session that cannot blend it
+        self.hairline = bool(cfg["appearance"].get("hairline", True))
         self.server = None
 
         window = self.theme["window"]
@@ -555,9 +558,10 @@ class Launcher:
                 soft_shadow(cr, inset, inset, panel_w, panel_h, t["roundness"], inset)
             rounded_rect(cr, inset, inset, panel_w, panel_h, t["roundness"])
             cr.fill()
-            if not t.get("borderPadding"):
+            if self.hairline and not t.get("borderPadding"):
                 # A hairline along the edge. Not from the theme JSON (borderPadding is 0 in it): on Linux the
                 # panel sits on the wallpaper with nothing blurring it, and the edge reads better with one.
+                # `appearance.hairline` turns it off for someone who reads that line as a border.
                 cr.set_source_rgba(1, 1, 1, 0.07)
                 rounded_rect(cr, inset, inset, panel_w, panel_h, t["roundness"])
                 cr.set_line_width(1)

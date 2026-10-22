@@ -246,6 +246,7 @@ def test_panel_corners_depend_on_the_session_alpha():
         launcher.theme, launcher.alpha, launcher.rgba = theme.DEFAULT_THEME, 1.0, rgba
         launcher.results, launcher.max_visible, launcher.query = [], 10, ""   # draw_window asks the content how tall the panel is
         launcher.shadow_margin = 0
+        launcher.hairline = True
         launcher.draw_window(Alloc(60, 40), cr)
         return surface.get_data()[0]
 
@@ -375,9 +376,9 @@ def test_surface_policy():
     assert "COSMIC" in compositor.NO_CLIENT_RESIZE_COMPOSITORS
 
     # A layer-shell policy is only a surface the client can build when the typelib is present. Without it the
-    # fallback that keeps the look is the X11 window through XWayland, which on a live COSMIC session had no
-    # titlebar and no outline and could be resized by the client; without XWayland the only thing left is the
-    # plain window the compositor decorates.
+    # fallback that keeps the geometry is the X11 window through XWayland, which on a live COSMIC session lost
+    # its titlebar but kept the compositor's outline and could be resized by the client; without XWayland the
+    # only thing left is the plain window the compositor decorates.
     assert overlay.x11_through_xwayland({"policy": "layer-shell"}, has_typelib=False, x11_display=":1")
     assert not overlay.x11_through_xwayland({"policy": "layer-shell"}, has_typelib=True, x11_display=":1")
     assert not overlay.x11_through_xwayland({"policy": "layer-shell"}, has_typelib=False, x11_display=None)
@@ -1105,6 +1106,7 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
     launcher.sel, launcher.offset, launcher.area = 0, 0, Area()
     launcher.window, launcher.rgba, launcher.alpha = Window(), True, 1.0
     launcher.shadow_margin = 0
+    launcher.hairline = True
     launcher.panel_width = t["window"]["width"] - 2 * t["window"]["paddingHorizontal"]
     launcher.session = {"compositor": "Sway", "policy": "layer-shell"}
     launcher.follows_content = True
@@ -1172,6 +1174,46 @@ def test_the_shadow_has_room_around_the_panel():
 
     launcher.rgba = False
     assert launcher.shadow_width() == 0                     # no penumbra without an alpha visual
+
+
+def test_the_panel_edge_can_be_turned_off():
+    """The 1 px line along the rounded rectangle is a choice, not a measurement: the theme's own border is 0 px.
+    `appearance.hairline` turns it off without moving the panel or changing the shadow."""
+    from esteban import overlay, theme
+
+    if not (overlay.HAVE_GTK and overlay.HAVE_CAIRO):
+        return
+
+    import cairo
+
+    t = theme.load_theme({})
+    assert config.DEFAULTS["appearance"]["hairline"] is True
+    assert t["window"]["borderPadding"] == 0
+
+    class Widget:
+        def get_allocated_width(self):
+            return 60
+
+        def get_allocated_height(self):
+            return 40
+
+    def paths(hairline):
+        launcher = object.__new__(overlay.Launcher)
+        launcher.theme, launcher.alpha, launcher.rgba = t, 1.0, True
+        launcher.results, launcher.max_visible, launcher.query = [], 10, ""
+        launcher.shadow_margin, launcher.hairline = 0, hairline
+        drawn = []
+        old_rounded = overlay.rounded_rect
+        overlay.rounded_rect = lambda cr, x, y, w, h, r: drawn.append((x, y, w, h))
+        try:
+            launcher.draw_window(Widget(), cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 60, 40)))
+        finally:
+            overlay.rounded_rect = old_rounded
+        return drawn
+
+    edge, without_edge = paths(True), paths(False)
+    assert len(edge) == 2 and len(without_edge) == 1         # the fill, then the edge
+    assert edge[0] == without_edge[0]                        # the same panel either way
 
 
 if __name__ == "__main__":

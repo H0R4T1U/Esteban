@@ -249,9 +249,9 @@ The policy is decided once, from the session (`compositor.py`, printed by `esteb
 | Session | Surface | Why |
 |---|---|---|
 | Hyprland, Sway, Wayfire, River, KDE Plasma (KWin), other wlroots-derived compositors | wlr-layer-shell overlay | an exclusive layer surface is the only way a client sits above everything, and it gets keyboard focus when mapped |
-| COSMIC (cosmic-comp) | wlr-layer-shell overlay | COSMIC decorates a plain toplevel with its own rounded frame and titlebar around the whole surface, which is what makes a box that sizes itself to its content read as a framed window; a layer surface is not decorated, and the connection survived three hide/show cycles with the layer-shell policy on a live session. That path needs the `GtkLayerShell` typelib (`gtk-layer-shell`). Without it the box is an X11 window through XWayland when one is running: GTK3 sets the Motif no-decorations hint, and on this session cosmic-comp left that window with no titlebar and no outline. Only when there is no XWayland display does it end up as the plain window the compositor decorates. The old caution about committing on a roleless surface still holds — the box never destroys a surface after it is unmapped. |
+| COSMIC (cosmic-comp) | wlr-layer-shell overlay | COSMIC decorates a plain window, toplevel or X11, with its own rounded outline and titlebar around the whole surface, which is what makes a box that sizes itself to its content read as a framed window; a layer surface is not decorated, and the connection survived three hide/show cycles with the layer-shell policy on a live session. That path needs the `GtkLayerShell` typelib (`gtk-layer-shell`). Without it the box can only be a normal window: on this session an X11 window through XWayland lost its titlebar (GTK3 sets the Motif no-decorations hint and cosmic-comp honoured it) but kept the outline, which cosmic-comp draws for the focused window whatever the client asks for. So the outline is the compositor's and the typelib is the only way to be rid of it. The old caution about committing on a roleless surface still holds — the box never destroys a surface after it is unmapped. |
 | GNOME | plain undecorated window | Mutter does not implement layer-shell |
-| X11 | normal undecorated window | no layer-shell protocol |
+| X11 | normal undecorated window | no layer-shell protocol; a window manager that honours the Motif hint leaves no titlebar (COSMIC honours the hint and still draws its own outline) |
 | no display session | the TUI in `ui.py` | nothing to draw on |
 
 `ESTEBAN_SURFACE=layer-shell|toplevel|x11|none` overrides the choice.
@@ -276,7 +276,8 @@ Nothing on Linux blurs the wallpaper behind the panel, so the measured colour al
 pasted on the screen rather than a card floating above it. `appearance.shadow` is the spread around the
 panel (16 px, 0 turns it off); cairo has no blur, so the penumbra is built from rings of rounded rectangles,
 outermost and faintest first, that pile up towards the edge. When the theme's `borderPadding` is 0 the panel
-edge gets a 1 px hairline, because a panel with no decoration around it reads better with one. Both are look
+edge gets a 1 px hairline, because a panel with no decoration around it reads better with one;
+`appearance.hairline` turns that line off on its own, since someone reads it as a border. Both are look
 choices, not evidence: the colours, padding, roundness and row geometry stay as measured, and the surface is
 the measured panel width plus the room the penumbra needs. Without an RGBA visual the shadow is not drawn at
 all, because an unblended penumbra is a filled black frame.

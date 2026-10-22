@@ -40,6 +40,10 @@ DEFAULTS = {
         # blurs the wallpaper behind the panel, so a soft shadow around it is what makes the box read as raised
         # instead of pasted onto the screen. This is the spread in pixels; 0 turns it off.
         "shadow": 16,
+        # Not an Alfred key, and for the same reason as `shadow`: the theme's own border is 0 px, so the panel on
+        # Linux is a flat fill on the wallpaper with nothing marking its shape. This is the 1 px edge along the
+        # rounded rectangle; it can be turned off on its own, without touching the shadow.
+        "hairline": True,
     },
     "advanced": {"shortcutmod": 1, "latching": True},
     "features": {
