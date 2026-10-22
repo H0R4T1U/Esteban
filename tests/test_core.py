@@ -184,6 +184,9 @@ def test_ipc_toggle():
 
     assert seen == ["toggle"]
     assert reply["rows"] == 3
+    # overlay.py hands poll straight to GLib.timeout_add, which drops a callback that returns
+    # nothing; the instance then stops answering `toggle` while its socket file is still there.
+    assert server.poll() is True
     server.close()
 
 
@@ -225,7 +228,9 @@ def test_direct_action_rows():
     assert overlay.visible_row_for_action(overlay.ACTION_DIRECT_ROW + 2, 5, 6) is None
 
     # On a machine without PyGObject the overlay must report itself unavailable, not raise.
-    assert overlay.available() is False or overlay.run() is False
+    # run() must not block on this assertion either, so only the unavailable path is exercised here.
+    if not overlay.available():
+        assert overlay.run() is False
 
 
 def test_surface_policy():
@@ -305,7 +310,7 @@ def test_doctor_locates_the_typelib():
     os.environ["GI_TYPELIB_PATH"] = str(d)
     try:
         assert doctor._typelib("Gtk-3.0") == str(d / "Gtk-3.0.typelib")
-        assert "missing" in doctor._typelib("PangoCairo-1.0")
+        assert "missing" in doctor._typelib("PangoCairo-9.9")          # a namespace nobody ships, so this holds on any machine
     finally:
         if old is None:
             os.environ.pop("GI_TYPELIB_PATH", None)
@@ -338,7 +343,7 @@ def test_keybind_entry_and_writer():
 
     cfg = {key: (value.copy() if isinstance(value, dict) else value) for key, value in config.DEFAULTS.items()}
     entry = hotkey.cosmic_entry(cfg, "/usr/local/bin/esteban")
-    assert entry == '(modifiers: [Alt], key: "space"): Spawn("/usr/local/bin/esteban", "toggle")'
+    assert entry == '(modifiers: [Alt], key: "space"): Spawn("/usr/local/bin/esteban toggle")'
     assert hotkey.key_name("space") == "space"                          # lowercase keysym names, as the file stores them
     assert hotkey.key_name("dollar") == "dollar"
     assert hotkey.key_name("f12") == "F12"
@@ -347,7 +352,14 @@ def test_keybind_entry_and_writer():
     v1 = d / "v1"
     v1.mkdir()
     shortcuts = v1 / "custom"
-    shortcuts.write_text('{\n    (modifiers: [Alt, Shift], key: "4"): Spawn("/usr/bin/notify-send", "hi"),\n}')
+    # the settings UI writes the entry across lines, with its optional description; the separator comma
+    # has to survive the append, because a map entry without one makes the whole file unparseable
+    shortcuts.write_text(
+        '{\n    (\n        modifiers: [\n            Alt, Shift,\n        ],\n'
+        '        key: "4",\n        description: Some("notify"),\n    ): Spawn("/usr/bin/notify-send hi"),\n}'
+    )
+    assert hotkey.entry_present(shortcuts.read_text(),
+                                '(modifiers: [Alt, Shift], key: "4"): Spawn("/usr/bin/notify-send hi")')
 
     old_file, old_data, old_command = hotkey.COSMIC_SHORTCUTS_FILE, hotkey.DATA_DIR, hotkey.spawn_command
     hotkey.COSMIC_SHORTCUTS_FILE, hotkey.DATA_DIR = shortcuts, d / "esteban"
@@ -356,6 +368,7 @@ def test_keybind_entry_and_writer():
         assert hotkey.write_keybind(cfg) == 0
         text = shortcuts.read_text()
         assert entry + "," in text
+        assert 'Spawn("/usr/bin/notify-send hi"),' in text                 # the separator comma survives
         assert "notify-send" in text                                   # existing entries kept
         assert hotkey.write_keybind(cfg) == 0                          # running it twice changes nothing
         assert shortcuts.read_text() == text
@@ -408,7 +421,7 @@ def test_spawn_command_names_a_file():
         command = hotkey.spawn_command()
         assert Path(command).is_absolute()                                    # not a bare name
         assert Path(command).is_file() and os.access(command, os.X_OK)        # bin/esteban, no install needed
-        assert hotkey.cosmic_entry(config.DEFAULTS, command).endswith(f'Spawn("{command}", "toggle")')
+        assert hotkey.cosmic_entry(config.DEFAULTS, command).endswith(f'Spawn("{command} toggle")')
 
         (bin_dir / "esteban").write_text("")                                  # entry point in a venv that is not on PATH
         assert hotkey.spawn_command() == str(bin_dir / "esteban")

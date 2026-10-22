@@ -12,17 +12,23 @@ stored under `local.hotkey.default` 0x203b5c. Linux has no client-side equivalen
 Default is Alt+Space, mirroring Alfred's Option+Space.
 
 COSMIC: COSMIC Settings > Keyboard > Custom Shortcuts runs a command, and the same list is stored as
-a RON map at ~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom. In that file the
-command and its arguments are two separate strings — `Spawn("/home/you/.local/bin/esteban",
-"toggle")` — so an entry written as `Spawn("esteban toggle")` execs a program named
-`esteban toggle` and looks like the key does nothing. Keys are stored as lowercase keysym names
-(`"4"`, `"dollar"`, `"space"`) with function keys as written (`"F12"`), so a capitalised `"Space"`
-entry never matches. `esteban keybind` prints the entry, `esteban keybind --write` appends it. Super
-already opens the COSMIC launcher, so pick a free key (Alt+Space, Super+F12, ...).
+a RON map at ~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom. A `Spawn` action takes
+one string, the command line, because cosmic-comp execs it as `/bin/sh -c <that string>`:
+`Spawn("/home/you/.local/bin/esteban toggle")`. Writing the command and its argument as two arguments
+— `Spawn("esteban", "toggle")` — is not the file's grammar; cosmic-comp rejects the action with
+`Expected closing )` and skips the entry, so the key does nothing. Entries are comma-separated, and an
+entry without its comma makes the whole file fail to parse, which drops every custom shortcut at once.
+Keys are stored as lowercase keysym names (`"4"`, `"dollar"`, `"space"`) with function keys as written
+(`"F12"`), so a capitalised `"Space"` entry never matches. The settings UI adds an optional
+`description: Some("...")` to the key, and the program has to be named as a file, because `sh -c` gets
+the compositor's PATH, not a login shell's. `esteban keybind` prints the entry, `esteban keybind
+--write` appends it. Super already opens the COSMIC launcher, so pick a free key (Alt+Space,
+Super+F12, ...).
 """
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,7 +36,7 @@ import time
 from pathlib import Path
 
 from . import compositor, ipc
-from .config import DATA_DIR, load_config, warn
+from .config import DATA_DIR, DEFAULTS, load_config, warn
 
 MOD_ALIASES = {"alt", "ctrl", "shift", "cmd", "meta", "super"}
 RUST_MOD_NAMES = {"alt": "Alt", "ctrl": "Ctrl", "shift": "Shift", "cmd": "Cmd", "meta": "Meta",
@@ -118,14 +124,17 @@ def key_name(key: str) -> str:
 def cosmic_entry(cfg: dict, command: str | None = None) -> str:
     """One entry in the format cosmic-settings writes to the custom-shortcuts file.
 
-    The file is a RON map, so an entry is a `key: value` pair, and the command and its arguments are
-    two separate strings. Modifier names are the Rust enum names (`Alt`, `Ctrl`, `Shift`, `Super`).
+    The file is a RON map, so an entry is a `key: value` pair. `Spawn` has one argument — the command
+    line that cosmic-comp hands to `/bin/sh -c` — so the command and its argument live inside one
+    string: `Spawn("/home/you/.local/bin/esteban toggle")`. Writing them as two arguments,
+    `Spawn("esteban", "toggle")`, is not the grammar, and cosmic-comp skips that entry. Modifier names
+    are the Rust enum names (`Alt`, `Ctrl`, `Shift`, `Super`).
     """
-    combo = cfg["hotkey"]["default"]
+    combo = (cfg.get("hotkey") or {}).get("default") or DEFAULTS["hotkey"]["default"]
     mods, key = parse_combo(f"{combo['mod']}+{combo['key']}")
     command = command or spawn_command()
     modifiers = ", ".join(RUST_MOD_NAMES[m] for m in sorted(mods)) or "Super"
-    return f'(modifiers: [{modifiers}], key: "{key_name(key)}"): Spawn("{command}", "toggle")'
+    return f'(modifiers: [{modifiers}], key: "{key_name(key)}"): Spawn("{command} toggle")'
 
 
 def instructions(combo: str) -> str:
@@ -160,9 +169,26 @@ def instructions(combo: str) -> str:
     return "\n".join(lines)
 
 
+def strip_description(text: str) -> str:
+    """The entry as the settings UI writes it, without its optional `description` field."""
+    return re.sub(r'description:\s*(Some\("[^"]*"\)|None),?', "", text)
+
+
 def entry_present(text: str, entry: str) -> bool:
-    """Same entry, whatever spacing cosmic-settings wrote it with."""
-    return " ".join(entry.split()) in " ".join(text.split())
+    """Same entry, whatever spacing, line breaks, or description cosmic-settings wrote it with.
+
+    `description` is part of the key the settings UI writes, and the UI puts each key field on its own
+    line, so the same shortcut can appear as
+    `(modifiers: [Alt], key: "space", description: Some("esteban"))` while `esteban keybind` prints the
+    key without it. Comparing the two as written text would report the entry as missing and write a
+    second one for the same key, so the description and the RON separators are dropped from both sides.
+    """
+    def norm(value: str) -> str:
+        # the UI writes the key one field per line, so compare without the RON separators and the
+        # layout whitespace; the string contents are compared the same way on both sides
+        return "".join(strip_description(value).replace(",", "").split())
+
+    return norm(entry) in norm(text)
 
 
 def write_keybind(cfg: dict) -> int:
@@ -172,7 +198,8 @@ def write_keybind(cfg: dict) -> int:
     treated as a config key, so a backup left beside the entry file becomes a bogus key and breaks the
     whole reload — the copy is kept in `~/.esteban/`. And the file is only edited when it is already a
     RON map or list, never guessed, because a file the parser rejects is dropped on reload and no
-    shortcut works at all.
+    shortcut works at all. Entries are comma-separated, so the separator that the new entry needs is
+    written even when the previous last entry had none: losing it is what makes the file unparseable.
 
     The settings UI is still the reliable path: hand-written entries have been reported not to take
     effect on some builds (pop-os/cosmic-epoch#2481), while the same key added through the UI worked.
@@ -195,7 +222,7 @@ def write_keybind(cfg: dict) -> int:
     opener, closer = ("{", "}") if body.startswith("{") else ("[", "]")
     if not (body.startswith(opener) and body.endswith(closer)):
         warn(f"{path} is not the RON map cosmic-settings writes, so nothing was changed. Add the "
-             f"shortcut in COSMIC Settings instead: command {spawn_command()}, argument toggle.")
+             f"shortcut in COSMIC Settings instead: command `{spawn_command()} toggle`.")
         return 1
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -206,8 +233,9 @@ def write_keybind(cfg: dict) -> int:
         warn(f"could not keep a copy in {backup} ({exc}); writing anyway")
 
     head = body[:-1].rstrip().rstrip(",")
+    separator = "," if head != opener else ""          # an empty map has no entry to separate
     try:
-        path.write_text(f"{head}\n    {entry},\n{closer}\n")
+        path.write_text(f"{head}{separator}\n    {entry},\n{closer}\n")
     except OSError as exc:
         warn(f"could not write {path} ({exc})")
         return 1
@@ -223,7 +251,7 @@ def write_keybind(cfg: dict) -> int:
 
 def keybind(cfg: dict, write: bool = False) -> int:
     """Print the keybinding for this session, and write it when asked."""
-    combo = cfg["hotkey"]["default"]
+    combo = (cfg.get("hotkey") or {}).get("default") or DEFAULTS["hotkey"]["default"]
     spec = f"{combo['mod']}+{combo['key']}"
     command = spawn_command()
     entry = cosmic_entry(cfg, command)
@@ -263,7 +291,7 @@ def spawn_launcher(cfg: dict) -> None:
 
 def bind(cfg: dict, callback) -> object | None:
     """Bind the combo when the display server allows it; otherwise explain the alternative."""
-    combo = cfg["hotkey"]["default"]
+    combo = (cfg.get("hotkey") or {}).get("default") or DEFAULTS["hotkey"]["default"]
     spec = f"{combo['mod']}+{combo['key']}"
 
     if is_wayland() and not os.environ.get("DISPLAY"):
@@ -341,7 +369,7 @@ def toggle(cfg: dict, fallback=None) -> int:
 
     # Nothing is listening. The compositor keybinding runs this command, so say what has to be
     # running for the key to work, then try to open the results box here.
-    combo = cfg["hotkey"]["default"]
+    combo = (cfg.get("hotkey") or {}).get("default") or DEFAULTS["hotkey"]["default"]
     warn(f"no instance listening on {ipc.socket_path()} — start `esteban daemon` at session start")
     print(instructions(f"{combo['mod']}+{combo['key']}"))
 

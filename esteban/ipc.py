@@ -83,14 +83,19 @@ class Server:
         self.sock.listen(8)
         self.sock.setblocking(False)
 
-    def poll(self) -> None:
-        """Accept at most one pending connection (call from a main loop)."""
+    def poll(self) -> bool:
+        """Accept at most one pending connection (call from a main loop).
+
+        Returns True so it can be handed straight to `GLib.timeout_add`: a callback that returns
+        nothing is dropped by GLib after the first call, and the instance then stops answering
+        `toggle` while its socket file is still there.
+        """
         if not self.sock:
-            return
+            return True
         try:
             conn, _ = self.sock.accept()
         except (BlockingIOError, OSError):
-            return
+            return True
         try:
             raw = conn.recv(4096)
             request = json.loads(raw.decode()) if raw else {}
@@ -106,6 +111,7 @@ class Server:
                 conn.close()
             except OSError:
                 pass
+        return True
 
     def serve(self) -> None:
         self.start()

@@ -41,7 +41,7 @@ TOPLEVEL_COMPOSITORS = {"COSMIC", "GNOME"}
 
 def detect(env: dict | None = None) -> dict:
     """The session: compositor name, display server, and the surface policy to use."""
-    env = env or dict(os.environ)
+    env = dict(os.environ) if env is None else env     # an empty env means "no session", not "inherit"
     desktop = (env.get("XDG_CURRENT_DESKTOP") or env.get("XDG_SESSION_DESKTOP") or "").lower()
 
     if env.get("HYPRLAND_INSTANCE_SIGNATURE"):

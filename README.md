@@ -276,8 +276,13 @@ each entry is a `key: value` pair:
 
 Three things in that file are easy to get wrong, and each one makes the key look dead:
 
-- the command and its arguments are **two separate strings** — `Spawn("esteban toggle")` tries to exec a
-  program named `esteban toggle`
+- `Spawn` takes **one string**, the whole command line, because cosmic-comp execs it as
+  `/bin/sh -c <that string>`: `Spawn("/home/you/.local/bin/esteban toggle")`. Writing the command and its
+  argument as two arguments — `Spawn("esteban", "toggle")` — is not the grammar, and cosmic-comp skips
+  the entry with `Expected closing )`.
+- entries are comma-separated. A missing separator comma makes the whole file unparseable
+  (`ExpectedComma` in `journalctl --user`), which drops every custom shortcut at once, not just the one
+  with the missing comma.
 - keys are stored as lowercase keysym names (`"space"`, `"4"`, `"dollar"`) with function keys as written
   (`"F12"`), so a capitalised `"Space"` never matches
 - the program has to be named as a file, because the entry is execed with the compositor's PATH, not a
@@ -299,11 +304,13 @@ If the key does nothing, check in this order:
    map, with `key: "space"` as written by the file, and the command as an absolute path.
 2. `esteban keybind` — it says whether the entry is in the file, whether the launcher path resolves, and
    whether anything is answering on the socket.
-3. Test the key on its own before blaming esteban: bind Alt+Space to `/usr/bin/touch` with argument
-   `/tmp/keypress`. If the file appears, the compositor is grabbing the key and the problem is on the
-   esteban side; if it does not, the chord never reaches the compositor (`wev` shows whether a key reaches
-   an app).
-4. The key only fires a command, and the command needs a listening instance: run `esteban daemon` in a
+3. Test the key on its own before blaming esteban: bind Alt+Space to the single string
+   `/usr/bin/touch /tmp/keypress` (one `Spawn` argument, as above). If the file appears, the compositor is
+   grabbing the key and the problem is on the esteban side; if it does not, the chord never reaches the
+   compositor (`wev` shows whether a key reaches an app).
+4. Check `journalctl --user` for the parse errors above — a rejected entry or a missing comma is reported
+   there the moment cosmic-comp reads the file, and nothing runs until the file parses.
+5. The key only fires a command, and the command needs a listening instance: run `esteban daemon` in a
    terminal and press the key — the terminal prints `toggle -> running instance`. Nothing visible happens
    when nothing is listening, because a shortcut spawns a process with no terminal to print in.
 5. Restart the settings daemon (`systemctl --user restart cosmic-settings-daemon`) or log out and back in

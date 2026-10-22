@@ -139,6 +139,10 @@ def run(cfg: dict | None = None, con=None, bind_hotkey: bool = False) -> bool:
     if session["policy"] == compositor.NONE:
         return False
 
+    if not Gtk.init_check():
+        warn("Gtk cannot be initialized in this session — using the terminal launcher")
+        return False
+
     try:
         display = Gdk.Display.open("")
     except Exception as exc:
