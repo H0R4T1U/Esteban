@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+*.egg-info/
+build/
+dist/
+
+# REA working artifacts stay local. The findings they support are written up in
+# docs/REA_REPORT.md and FINDINGS.md, so the repo does not need them.
+# `snapshots/` is a copy of a live Alfred database and contains personal data.
+evidence/
+snapshots/
+analysis/

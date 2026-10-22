@@ -1,0 +1,574 @@
+"""The results box on Linux — one widget, one policy.
+
+The surface kind is chosen once, from the compositor (see `compositor.py`):
+
+    layer-shell   Hyprland, Sway, Wayfire, KWin, other wlroots-derived compositors: an
+                  exclusive overlay surface, which is the only way a client can sit on top of
+                  everything and still get keyboard focus.
+    toplevel      COSMIC and GNOME: a plain undecorated window. COSMIC does speak
+                  wlr-layer-shell, but a commit on a surface whose role was already destroyed
+                  is a protocol violation there and the compositor drops the connection, so a
+                  launcher that hides and re-shows a layer surface can kill itself; window
+                  teardown is fine on COSMIC. Mutter does not implement layer-shell at all.
+    x11           a normal undecorated window.
+    none          no display session, and the caller falls back to the TUI in `ui.py`.
+
+Look and behaviour are the REA measurements, kept in `theme.py`: width 609, search font 27
+(field height 54), row height 49, selection radius `min(roundness, 4)`, scrollbar radius
+`min(thickness >> 1, 4)`, the shortcut alpha fade, and the text column at x = 32, all from
+`AlfredSelectionList::drawRect:` 0xa0b44 and `AlfredTheme::calculate*` 0x96a80 / 0x968e0 / 0x96af0.
+
+Keys mirror the action numbers recorded from `AlfredKeystrokeHelper::actionFromEvent:` 0x2c918 and
+`AlfredSelectionList::performKeyEquivalent:` 0xa1620, including `row + offset - 1` for the number
+keys (the number keys address the visible rows) and `highlightNext` 0xa1ad0 wrapping the selection
+back to row 0. `advanced.shortcutmod` 0x29a478 = 1 selects Control, otherwise the Super key.
+
+Lifecycle rule, because of the COSMIC behaviour above: the window is never destroyed after it has
+been unmapped, and quitting leaves the main loop instead of destroying the window — closing the
+display connection ends the session cleanly on every compositor.
+"""
+from __future__ import annotations
+
+import os
+import signal
+
+from . import actions, clipboard, compositor, ipc, store, theme, ui, workflows
+from .config import load_config, warn
+
+ACTION_RUN, ACTION_UP, ACTION_DOWN, ACTION_PGUP, ACTION_PGDN, ACTION_COPY = 1, 4, 5, 6, 7, 11
+ACTION_DIRECT_ROW = 0x1A
+PI = 3.141592653589793
+
+try:
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import GLib, Gdk, GdkPixbuf, Gtk, Pango, PangoCairo
+    HAVE_GTK = True
+except Exception:
+    HAVE_GTK = False
+
+try:
+    gi.require_version("GtkLayerShell", "1.0")
+    from gi.repository import GtkLayerShell
+    HAVE_SHELL = True
+except Exception:
+    GtkLayerShell = None
+    HAVE_SHELL = False
+
+
+def available() -> bool:
+    return HAVE_GTK
+
+
+def mod_action(item, mod_name: str) -> dict:
+    """The row as it behaves while the action modifier is held (`mods` in the item contract).
+
+    Alfred stores mods as `{modifier: {subtitle, arg}}` and the mod never rewrites the stored
+    row, so this returns a copy; `actionFromEvent:` 0x2c918 dispatches that copy.
+    """
+    item = dict(item)
+    spec = (item.get("mods") or {}).get(mod_name.lower()) or {}
+    if spec:
+        if spec.get("arg"):
+            item["arg"] = spec["arg"]
+        if spec.get("subtitle"):
+            item["subtitle"] = spec["subtitle"]
+        if spec.get("action"):
+            item["action"] = (spec["action"], spec.get("arg", item.get("arg", "")))
+    return item
+
+
+def visible_row_for_action(action: int, offset: int, count: int) -> int | None:
+    """Which row a number key means — `row + offset - 1` from 0xa15e0, i.e. the visible rows."""
+    if action < ACTION_DIRECT_ROW:
+        return None
+    row = offset + (action - ACTION_DIRECT_ROW)
+    return row if row < count else None
+
+
+def run(cfg: dict | None = None, con=None, bind_hotkey: bool = False) -> bool:
+    """Show the results box; returns False when no window can be used (caller falls back to the TUI)."""
+    if not HAVE_GTK:
+        return False
+    cfg = cfg or load_config()
+    session = compositor.detect()
+    if session["policy"] == compositor.NONE:
+        return False
+
+    try:
+        display = Gdk.Display.open("")
+    except Exception as exc:
+        warn(f"no display available ({exc}) — using the terminal launcher")
+        return False
+    if con is None:
+        con = store.connect()
+
+    launcher = Launcher(cfg, con, session)
+    try:
+        launcher.build()
+    except Exception as exc:
+        warn(f"overlay failed ({exc}) — using the terminal launcher")
+        con.close()
+        return False
+
+    server = ipc.Server(launcher.handle)
+    try:
+        server.start()
+    except RuntimeError as exc:
+        warn(str(exc))
+        con.close()
+        return False
+    launcher.server = server
+    GLib.timeout_add(100, server.poll)
+
+    listener = None
+    if bind_hotkey:
+        from . import hotkey
+
+        # pynput listens on its own thread, so the window call goes through the main loop.
+        listener = hotkey.bind(cfg, lambda: GLib.idle_add(launcher.show))
+
+    signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(launcher.quit))
+
+    launcher.show()
+    try:
+        Gtk.main()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if listener:
+            listener.stop()
+        server.close()
+        try:
+            clipboard.record(con, clipboard.get_text(), "esteban", cfg)
+        except Exception:
+            pass
+        con.close()
+    return True
+
+
+# ------------------------------------------------------------------ drawing helpers
+
+
+def color(value: str, alpha: float = 1.0):
+    r, g, b, a = theme.parse_color(value)
+    return (r, g, b, a * alpha)
+
+
+def font_description(spec: dict):
+    return Pango.FontDescription.from_string(f"{spec.get('font') or 'Sans'} {spec['size']}")
+
+
+def one_line(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def make_layout(cr, spec: dict):
+    layout = PangoCairo.create_layout(cr)
+    layout.set_font_description(font_description(spec))
+    return layout
+
+
+def rounded_rect(cr, x, y, w, h, radius):
+    r = max(int(radius), 0)
+    if r == 0:
+        cr.rectangle(x, y, w, h)
+        return
+    cr.new_path()
+    cr.arc(x + r, y + r, r, 0, PI / 2)
+    cr.line_to(x + w - r, y + r)
+    cr.arc(x + w - r, y + r, r, PI / 2, PI)
+    cr.line_to(x + w - r, y + h - r)
+    cr.arc(x + w - r, y + h - r, r, PI, 3 * PI / 2)
+    cr.line_to(x + r, y + h - r)
+    cr.arc(x + r, y + h - r, r, 3 * PI / 2, 2 * PI)
+    cr.close_path()
+
+
+class Launcher:
+    def __init__(self, cfg: dict, con, session: dict):
+        self.cfg = cfg
+        self.con = con
+        self.session = session
+        self.policy = session["policy"]
+        self.theme = theme.load_theme(cfg)
+
+        self.mode = "search"
+        self.query = ""
+        self.sel = 0
+        self.offset = 0                     # Alfred's _offset: first visible row
+        self.results = []
+        self.max_visible = int(cfg["appearance"].get("maxVisibleRows", 10))
+        self.options = cfg["appearance"].get("options", {})
+        self.mod_name = "Ctrl" if cfg.get("advanced", {}).get("shortcutmod", 1) == 1 else "Super"
+        self.mod_mask = Gdk.ModifierType.CONTROL_MASK if self.mod_name == "Ctrl" else Gdk.ModifierType.MOD4_MASK
+        self.pixbuf_cache = {}
+        self.server = None
+
+        window = self.theme["window"]
+        self.window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        self.window.set_title("esteban")
+        self.window.set_resizable(False)
+        self.window.set_decorated(False)
+        self.window.set_accept_focus(True)
+        self.window.set_size_request(window["width"], -1)
+        self.window.set_app_paintable(True)
+
+        self.entry = Gtk.Entry()
+        self.entry.set_has_frame(False)
+        self.entry.set_placeholder_text("Search")
+
+        self.area = Gtk.DrawingArea()
+        self.area.set_size_request(window["width"] - 2 * window["paddingHorizontal"],
+                                   theme.row_height(self.theme) * self.max_visible)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.pack_start(self.entry, False, False, 0)
+        box.pack_start(self.area, False, False, 0)
+        self.window.add(box)
+
+        self.window.connect("draw", self.draw_window)
+        self.window.connect("key-press-event", self.on_key)
+        self.window.connect("delete-event", self.on_delete)
+        self.area.connect("draw", self.draw_rows)
+        self.entry.connect("changed", self.on_entry_changed)
+        self.entry.connect("activate", self.on_entry_activate)
+
+    # ------------------------------------------------------------------ surface policy
+
+    def build(self) -> None:
+        visual = self.rgba_visual()
+        if visual:
+            self.window.set_visual(visual)          # RGBA, so the rounded corners are transparent
+        self.apply_css()
+        if self.policy == compositor.LAYER_SHELL and HAVE_SHELL and GtkLayerShell.is_supported():
+            self.use_layer_shell()
+        else:
+            self.window.set_position(Gtk.WindowPosition.CENTER)
+
+    def rgba_visual(self):
+        """The RGBA visual when the session has one; None on a session that does not."""
+        try:
+            screen = Gdk.Display.get_default().get_default_screen()
+            return screen.get_rgba_visual() if screen else None
+        except Exception:
+            return None
+
+    def apply_css(self) -> None:
+        search = self.theme["search"]
+        provider = Gtk.CssProvider()
+        provider.load_from_data(
+            (".esteban-search { font-family: \"%s\"; font-size: %dpx; padding: %dpx %dpx; "
+             "background-color: transparent; color: %s; caret-color: %s; border: none; }\n"
+             % (search["text"].get("font") or "Sans", search["text"]["size"],
+                search["paddingVertical"], search["paddingHorizontal"],
+                theme.css_color(search["text"]["color"]),
+                theme.css_color(search["text"]["colorSelected"]))).encode())
+        self.entry.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.entry.get_style_context().add_class("esteban-search")
+
+    def use_layer_shell(self) -> None:
+        """An exclusive overlay surface. Anchoring the top edge is what lets the compositor
+        hand keyboard focus to it when it is mapped."""
+        GtkLayerShell.init_for_window(self.window)
+        GtkLayerShell.set_layer(self.window, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_exclusivity(self.window, GtkLayerShell.Exclusivity.NONE)
+        GtkLayerShell.set_anchor_edge(self.window, GtkLayerShell.Edge.TOP, True)
+        try:
+            GtkLayerShell.set_keyboard_mode(self.window, GtkLayerShell.KeyboardMode.EXCLUSIVE)
+        except Exception:
+            pass
+
+        width, height = self.monitor_size() or (0, 0)
+        margin = int(self.cfg["appearance"].get("position", {}).get("margin", 140))
+        left = max(0, (width - self.theme["window"]["width"]) // 2)
+        GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.TOP, margin)
+        GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.LEFT, left)
+
+    def monitor_size(self):
+        """The screen size for centring; None when the display exposes no monitor."""
+        try:
+            monitor = Gdk.Display.get_default().get_monitor(0)
+            if monitor:
+                geometry = monitor.get_geometry()
+                return geometry.width, geometry.height
+        except Exception:
+            pass
+        return None
+
+    # ------------------------------------------------------------------ window
+
+    def on_delete(self, widget, event):
+        """Leave the main loop without destroying the window: a destroy after an unmap is the
+        order COSMIC reports as a protocol violation, and exiting the loop closes the connection
+        instead."""
+        self.quit()
+        return True
+
+    def quit(self) -> None:
+        Gtk.main_quit()
+
+    def draw_window(self, widget, cr):
+        t = self.theme["window"]
+        w, h = widget.get_allocated_width(), widget.get_allocated_height()
+        cr.set_source_rgba(*theme.parse_color(t["color"]))
+        rounded_rect(cr, 0, 0, w, h, t["roundness"])
+        cr.fill()
+        if t.get("borderPadding"):
+            cr.set_source_rgba(*theme.parse_color(t["borderColor"]))
+            rounded_rect(cr, 0, 0, w, h, t["roundness"])
+            cr.set_line_width(t["borderPadding"])
+            cr.stroke()
+        return False                       # the entry and the rows draw on top
+
+    # ------------------------------------------------------------------ results
+
+    def rebuild(self) -> None:
+        if self.mode == "search":
+            self.results = ui.build_results(self.query, self.con, self.cfg,
+                                            workflows.load_workflows(self.cfg, self.con))
+        elif self.mode == "clipboard":
+            self.results = ui.clipboard_results(self.con, self.query, self.cfg, 20)
+        else:
+            self.results = ui.snippet_results(self.con, self.query, self.cfg, 20)
+        if self.sel >= len(self.results):
+            self.sel = max(len(self.results) - 1, 0)
+        self.offset = 0
+
+    def set_query(self, query: str) -> None:
+        self.query = query
+        self.sel = 0
+        self.rebuild()
+        self.area.queue_draw()
+
+    def draw_rows(self, widget, cr):
+        t = self.theme["result"]
+        row_h = theme.row_height(self.theme)
+        visible = min(len(self.results), self.max_visible)
+        width = widget.get_allocated_width()
+        pad_h = t["iconPaddingHorizontal"]
+        icon_size = t["iconSize"]
+        text_x = pad_h + icon_size + 1        # drawRect's text column, x = 32 with the default icon
+        gap = t["textSpacing"]
+
+        for i in range(visible):
+            row = self.offset + i
+            if row >= len(self.results):
+                break
+            item = self.results[row]
+            y = i * row_h
+            selected = row == self.sel
+
+            if selected:
+                cr.set_source_rgba(*theme.parse_color(t["backgroundSelected"]))
+                rounded_rect(cr, 0, y, width, row_h, theme.selection_radius(self.theme))
+                cr.fill()
+
+            self.draw_icon(cr, item, pad_h, y + max(t["paddingVertical"], (row_h - icon_size) // 2), icon_size)
+
+            title = make_layout(cr, t["text"])
+            title.set_text(one_line(item["title"]), -1)
+            sub = make_layout(cr, t["subtext"])
+            sub.set_text(one_line(item["subtitle"]), -1)
+            title_h, sub_h = title.get_pixel_size()[1], sub.get_pixel_size()[1]
+            top = y + max(t["paddingVertical"], (row_h - (title_h + gap + sub_h)) // 2)
+
+            cr.set_source_rgba(*color(t["text"]["colorSelected"] if selected else t["text"]["color"]))
+            cr.move_to(text_x, top)
+            PangoCairo.show_layout(cr, title)
+
+            cr.set_source_rgba(*color(t["subtext"]["colorSelected"] if selected else t["subtext"]["color"]))
+            cr.move_to(text_x, top + title_h + gap)
+            PangoCairo.show_layout(cr, sub)
+
+            if not self.options.get("hideshortcuts"):
+                hint = make_layout(cr, t["shortcut"])
+                hint.set_text(ui.shortcut_hint(item, self.mod_name), -1)
+                sw, sh = hint.get_pixel_size()
+                alpha = theme.shortcut_alpha(row, self.sel, visible)
+                cr.set_source_rgba(*color(t["shortcut"]["colorSelected"] if selected
+                                          else t["shortcut"]["color"], alpha))
+                cr.move_to(width - sw - pad_h, y + (row_h - sh) // 2)
+                PangoCairo.show_layout(cr, hint)
+
+        if self.options.get("showscrollbar") and len(self.results) > visible:
+            sb = self.theme["scrollbar"]
+            thickness, radius = sb["thickness"], theme.scrollbar_roundness(self.theme)
+            bar_h = max(row_h * visible * visible / len(self.results), row_h)
+            y = bar_h * self.offset / max(len(self.results) - visible, 1)
+            cr.set_source_rgba(*theme.parse_color(sb["color"]))
+            rounded_rect(cr, width - thickness, y, thickness, bar_h, radius)
+            cr.fill()
+        return False
+
+    def draw_icon(self, cr, item, x, y, size):
+        path = item.get("icon")
+        if path:
+            pixbuf = self.pixbuf_cache.get(path)
+            if pixbuf is None:
+                try:
+                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(path, size, size)
+                except Exception:
+                    pixbuf = False
+                self.pixbuf_cache[path] = pixbuf
+            if pixbuf:
+                cr.save()
+                cr.translate(x, y)
+                Gdk.cairo_set_source_pixbuf(cr, pixbuf, 0, 0)
+                cr.paint()
+                cr.restore()
+                return
+
+        cr.save()
+        cr.set_source_rgba(*theme.parse_color(self.theme["result"]["backgroundSelected"]))
+        rounded_rect(cr, x, y, size, size, min(6, size // 4))
+        cr.fill()
+        badge = make_layout(cr, {"font": "Sans", "size": max(size // 2, 10)})
+        badge.set_text((item["title"] or "?")[:1].upper(), -1)
+        cr.set_source_rgba(*color(self.theme["result"]["text"]["colorSelected"]))
+        cr.move_to(x + size / 4, y + size / 4)
+        PangoCairo.show_layout(cr, badge)
+        cr.restore()
+
+    # ------------------------------------------------------------------ keys
+
+    def action_number(self, event) -> int:
+        key = event.keyval
+        if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            return ACTION_RUN
+        if key == Gdk.KEY_Up:
+            return ACTION_UP
+        if key == Gdk.KEY_Down:
+            return ACTION_DOWN
+        if key == Gdk.KEY_Page_Up:
+            return ACTION_PGUP
+        if key == Gdk.KEY_Page_Down:
+            return ACTION_PGDN
+        if key in (Gdk.KEY_c, Gdk.KEY_C) and event.state & self.mod_mask:
+            return ACTION_COPY
+        if event.state & self.mod_mask and Gdk.KEY_1 <= key <= Gdk.KEY_9:
+            return ACTION_DIRECT_ROW + (key - Gdk.KEY_1)
+        return 0
+
+    def on_key(self, widget, event):
+        action = self.action_number(event)
+        if action in (ACTION_RUN, ACTION_COPY):
+            self.perform(self.offset + self.sel)
+            return True
+        if action == ACTION_UP:
+            self.sel = max(self.sel - 1, 0)
+            self.area.queue_draw()
+            return True
+        if action == ACTION_DOWN and self.results:
+            self.sel = (self.sel + 1) % len(self.results)      # highlightNext 0xa1ad0 wraps
+            self.area.queue_draw()
+            return True
+        if action in (ACTION_PGUP, ACTION_PGDN):
+            target = self.sel - self.max_visible if action == ACTION_PGUP else self.sel + self.max_visible
+            self.sel = max(0, min(target, max(len(self.results) - 1, 0)))
+            self.area.queue_draw()
+            return True
+        if action >= ACTION_DIRECT_ROW:
+            row = visible_row_for_action(action, self.offset, len(self.results))
+            if row is not None:
+                self.perform_direct(row)
+            return True
+
+        key = event.keyval
+        if key == Gdk.KEY_Escape:
+            if self.query:
+                self.entry.set_text("")
+                self.set_query("")
+            else:
+                self.window.hide()
+            return True
+        if not (event.state & self.mod_mask):
+            return False                   # typing goes to the search field
+        if key == Gdk.KEY_v:
+            self.mode = "clipboard"
+        elif key == Gdk.KEY_s:
+            self.mode = "snippets"
+        elif key in (Gdk.KEY_p, Gdk.KEY_P):            # copy path
+            self.run_action("copypath")
+            return True
+        elif key in (Gdk.KEY_t, Gdk.KEY_T):            # browse in terminal
+            self.run_action("terminal")
+            return True
+        elif key in (Gdk.KEY_e, Gdk.KEY_E):            # paste keystroke
+            clipboard.paste()
+            return True
+        elif key in (Gdk.KEY_q, Gdk.KEY_Q):
+            self.quit()
+            return True
+        else:
+            return False
+        self.entry.set_text("")
+        self.set_query("")
+        return True
+
+    def run_action(self, kind: str) -> None:
+        if not self.results:
+            return
+        item = self.results[self.offset + self.sel]
+        target = item.get("path") or item.get("arg") or ""
+        if kind == "copypath":
+            actions.action_copy_path(target, self.con, self.query)
+        elif kind == "terminal":
+            actions.action_terminal(target, self.cfg, self.con, self.query)
+        self.area.queue_draw()
+
+    def perform_direct(self, row: int) -> None:
+        """Direct action row (0xa15e0): fire the row's `mods` entry for the action modifier."""
+        if row < 0 or row >= len(self.results):
+            return
+        self.perform_item(mod_action(self.results[row], self.mod_name))
+
+    def perform(self, index: int) -> None:
+        if not self.results or index < 0 or index >= len(self.results):
+            return
+        self.perform_item(self.results[index])
+
+    def perform_item(self, item) -> None:
+        item["keyword"] = self.query
+        follow = ui.action_for(item, self.con, self.cfg)
+        if follow:
+            self.results = follow
+            self.offset, self.sel = 0, 0
+            self.mode = "search"
+        self.area.queue_draw()
+
+    def on_entry_changed(self, entry):
+        self.set_query(entry.get_text())
+
+    def on_entry_activate(self, entry):
+        self.perform(self.offset + self.sel)
+
+    # ------------------------------------------------------------------ ipc
+
+    def handle(self, command: str, payload: dict) -> dict:
+        if command == "toggle":
+            self.show() if not self.window.get_visible() else self.window.hide()
+        elif command == "show":
+            self.show()
+        elif command == "hide":
+            self.window.hide()
+        elif command == "query":
+            query = str(payload.get("query", ""))
+            self.entry.set_text(query)
+            self.set_query(query)
+            self.show()
+        elif command == "quit":
+            self.quit()
+        return {"ok": True, "mode": self.mode, "rows": len(self.results),
+                "policy": self.policy, "pid": os.getpid()}
+
+    def show(self) -> None:
+        self.window.show_all()
+        try:
+            self.window.present()           # ask for focus on a plain window; a layer surface gets it when mapped
+        except Exception:
+            pass
+        try:
+            self.entry.grab_focus()
+        except Exception:
+            pass

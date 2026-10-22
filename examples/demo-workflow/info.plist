@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>com.clone.demo</string>
+	<key>connections</key>
+	<dict>
+		<key>A1</key>
+		<array>
+			<dict>
+				<key>destination</key>
+				<string>B1</string>
+				<key>destinationuid</key>
+				<string>B1</string>
+			</dict>
+		</array>
+	</dict>
+	<key>description</key>
+	<string>Example workflow: keyword -&gt; openurl</string>
+	<key>name</key>
+	<string>Search DuckDuckGo</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>keyword</key>
+			<string>ddg</string>
+			<key>subtitle</key>
+			<string>Search DuckDuckGo</string>
+			<key>type</key>
+			<string>alfred.workflow.trigger.keyword</string>
+			<key>uid</key>
+			<string>A1</string>
+		</dict>
+		<dict>
+			<key>type</key>
+			<string>alfred.workflow.action.openurl</string>
+			<key>uid</key>
+			<string>B1</string>
+			<key>url</key>
+			<string>https://duckduckgo.com/?q={query}</string>
+		</dict>
+	</array>
+</dict>
+</plist>

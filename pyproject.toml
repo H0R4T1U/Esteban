@@ -1,0 +1,20 @@
+[project]
+name = "esteban"
+version = "0.1.0"
+description = "Linux launcher modeled on Alfred 5, built from REA evidence"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+hotkey = ["pynput>=1.4"]
+overlay = ["pygobject>=3.42"]
+
+[project.scripts]
+esteban = "esteban.main:cli"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["esteban*"]

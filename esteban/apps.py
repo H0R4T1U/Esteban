@@ -1,0 +1,103 @@
+"""Application index.
+
+Alfred indexes /Applications, /System/Applications and ~/Applications via
+Spotlight metadata (kMDItemDisplayName, kMDItemAlternateNames,
+kMDItemContentTypeTree == 'com.apple.application-bundle'). The Linux
+equivalent is the XDG desktop-entry database, which is what this module
+scans into the same `files` table (filetype = 1).
+"""
+from __future__ import annotations
+
+import sqlite3
+import time
+from pathlib import Path
+
+from . import store
+from .config import expand
+
+FILETYPE_APP = 1
+
+APP_DIRS = [
+    "/usr/share/applications",
+    "/var/lib/flatpak/exports/share/applications",
+    "~/.local/share/applications",
+]
+
+
+def populate(con: sqlite3.Connection) -> int:
+    count = 0
+    for d in APP_DIRS:
+        base = expand(d)
+        if not base.is_dir():
+            continue
+        for entry in base.glob("*.desktop"):
+            name, execline, comment = read_desktop(entry)
+            if not name or not execline:
+                continue
+            row = (str(entry), entry.stem, name,
+                   normalize(name), initials(name), chars(name), 0, "", "", FILETYPE_APP)
+            con.execute("INSERT INTO files (path, fileName, name, nameSearch, nameSplit, nameChars, lastUsed, keywords, altnames, filetype) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)", row)
+            count += 1
+    con.commit()
+    return count
+
+
+def read_desktop(path: Path):
+    name = execline = comment = ""
+    for line in path.read_text(errors="replace").splitlines():
+        if line.startswith("Name=") and not name:
+            name = line[5:].strip()
+        elif line.startswith("Exec="):
+            execline = line[5:].strip()
+        elif line.startswith("Comment=") and not comment:
+            comment = line[8:].strip()
+    return name or path.stem, execline, comment
+
+
+def normalize(n: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]", "", n.lower())
+
+
+def initials(n: str) -> str:
+    import re
+    return "".join(w[0] for w in re.split(r"[\s._-]+", n) if w)
+
+
+def chars(n: str) -> str:
+    return normalize(n)
+
+
+def search(con: sqlite3.Connection, query: str, limit: int = 20):
+    from . import ranking
+    from .fuzzy import fuzzy_like, score
+
+    if not query:
+        # Default results with no query: recently used applications first
+        rows = con.execute(
+            "SELECT path, name, lastUsed FROM files WHERE filetype = 1 "
+            "ORDER BY lastUsed DESC LIMIT ?", (limit,)).fetchall()
+        return [(p, n, 1) for p, n, lu in rows]
+
+    pat = fuzzy_like(query)
+    results = []
+    for path, name, namesearch, namesplit in con.execute(
+            "SELECT path, name, nameSearch, nameSplit FROM files WHERE filetype = 1 AND (nameSearch LIKE ? OR nameSplit LIKE ?)",
+            (pat, pat)):
+        w = ranking.knowledge_weight(con, path, query) + ranking.strong_latch(con, query)
+        s = score(query, name, w)
+        if s > 0:
+            results.append((s, path, name))
+    results.sort(reverse=True)
+    return [(p, n, int(ranking.knowledge_weight(con, p, query) > 0)) for s, p, n in results[:limit]]
+
+
+def launch(desktop_path: str, con: sqlite3.Connection, keyword: str) -> None:
+    import subprocess
+    name, execline, _ = read_desktop(Path(desktop_path))
+    cmd = [tok for tok in execline.split() if "%f" not in tok and "%u" not in tok]
+    subprocess.Popen(cmd, start_new_session=True)
+    store.add_knowledge(con, desktop_path, keyword)
+    store.latch(con, desktop_path, keyword, strong=False)
+    store.touch_last_used(con, desktop_path)
