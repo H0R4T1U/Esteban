@@ -62,6 +62,7 @@ DEFAULTS = {
         "clipboard": {
             "enabled": True,
             "limit": 200,
+            "interval": 1.0,               # seconds, clipboard/prefs.plist `interval` (checkPasteboard polling)
             "persistFor": 604800,          # seconds (features.clipboard.persistFor)
             "fastAppend": True,
             "fastAppendSeparator": "\n",

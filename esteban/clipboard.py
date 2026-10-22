@@ -6,6 +6,9 @@ Behavior copied from REA evidence in AlfredClipboardManager:
   - fastAppend merges consecutive copies into the latest row
   - moveToTopOnUse: UPDATE clipboard SET ts = ? WHERE rowid = ?
   - expiry: DELETE FROM clipboard WHERE ts < ? AND dataType = ?
+  - checkPasteboard: changeCount polling with lastClipHash, so a copy is recorded on the turn that notices
+    it. `check_once` is that turn, and the running launcher calls it from its main loop; without those turns
+    the history only fills when the launcher exits.
 The Linux clipboard is accessed through wl-clipboard (Wayland) or xclip (X11). A copy the launcher makes is
 recorded here as well: `checkPasteboard:` sees the pasteboard, so the watcher is not what records the copies
 the launcher itself performs.
@@ -38,7 +41,7 @@ def _warn_no_backend() -> None:
         warn("no clipboard backend: install wl-clipboard (Wayland) or xclip (X11)")
 
 
-def _backend():
+def backend():
     global BACKEND
     if BACKEND:
         return BACKEND
@@ -56,7 +59,7 @@ def _backend():
 
 
 def get_text() -> str:
-    b = _backend()
+    b = backend()
     try:
         if b == "wayland":
             return subprocess.run(["wl-paste"], capture_output=True, text=True, timeout=2).stdout
@@ -71,7 +74,7 @@ def get_text() -> str:
 
 
 def set_text(text: str) -> None:
-    b = _backend()
+    b = backend()
     if b == "none":
         _warn_no_backend()
         return
@@ -99,7 +102,7 @@ def set_uri_list(paths) -> bool:
     does something the user can paste.
     """
     body = uri_list(paths)
-    b = _backend()
+    b = backend()
     if b == "none":
         _warn_no_backend()
         return False
@@ -122,6 +125,11 @@ def set_uri_list(paths) -> bool:
         warn(f"clipboard copy failed ({exc})")
         return False
     return False
+
+
+def content_hash(text: str) -> str:
+    """The `lastClipHash` 0x5330e8 comparison value."""
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _record_copy(con, cfg, text: str, app: str = "") -> None:
@@ -158,7 +166,7 @@ def copy_file(con, cfg, paths, app: str = "") -> bool:
 
 def paste() -> None:
     """Simulate the paste keystroke (Alfred's Paste action and autoexpand snippets)."""
-    b = _backend()
+    b = backend()
     if b == "none":
         _warn_no_backend()
         return
@@ -179,7 +187,7 @@ def record(con: sqlite3.Connection, text: str, app: str = "", cfg: dict | None =
     cfg = (cfg or {}).get("features", {}).get("clipboard", {})
     if not text or len(text) > 100_000:
         return False
-    h = hashlib.sha256(text.encode()).hexdigest()
+    h = content_hash(text)
     if con.execute("SELECT 1 FROM clipboard WHERE dataHash = ?", (h,)).fetchone():
         con.execute("delete from clipboard where dataHash = ?", (h,))
     # fastAppend: merge into latest item
@@ -263,34 +271,48 @@ def auto_expand(con: sqlite3.Connection, text: str, cfg: dict) -> bool:
     return True
 
 
-def watch(con: sqlite3.Connection, cfg: dict, interval: float = 1.0) -> None:
+def check_once(con, cfg, last: str | None) -> str | None:
+    """One turn of `checkPasteboard:` 0x48264, and the turn the running launcher needs.
+
+    Reads the pasteboard and records it when the content is not what the previous turn saw
+    (`lastClipHash` 0x5330e8), applying the observed rules: dedupe by dataHash, fastAppend, blacklist,
+    expiry. It is a single turn rather than a loop because the launcher calls it from its main loop, and the
+    history the clipboard viewer reads is filled by those turns. Returns the hash to compare next turn.
+    """
+    clip = (cfg.get("features") or {}).get("clipboard") or {}
+    text = get_text()
+    if not text or len(text) > 100_000:
+        return last
+    h = content_hash(text)
+    if h == last:
+        return last
+    app = active_app()
+    if app in clip.get("blacklist", []):
+        return h                # a blacklisted app's copy is not recorded, and not seen again
+    record(con, text, app, cfg)
+    if clip.get("autoExpandSnippets") and app not in clip.get("autoExpandExcludedApps", []):
+        auto_expand(con, text, cfg)
+    expire(con, cfg)
+    return h
+
+
+def watch(con: sqlite3.Connection, cfg: dict, interval: float | None = None) -> None:
     """Clipboard watcher, mirroring Alfred's `Starting clipboard watcher` / checkPasteboard.
 
-    Polls the clipboard (poll interval = clipboard/prefs.plist `interval`) and applies
-    the observed rules: dedupe by dataHash, fastAppend, blacklist, expiry.
+    Polls the pasteboard (poll interval = clipboard/prefs.plist `interval`) through `check_once`. This is the
+    blocking form for the command line; the running launcher polls the same turn from its main loop, so the
+    history fills while the launcher is running and not only when it exits.
     """
-    cfg = cfg["features"]["clipboard"]
-    if _backend() == "none":
+    clip = (cfg.get("features") or {}).get("clipboard") or {}
+    if backend() == "none":
         warn("no clipboard backend: install wl-clipboard (Wayland) or xclip (X11)")
         return
-    interval = float(os.environ.get("ESTEBAN_INTERVAL", interval))
+    interval = float(os.environ.get("ESTEBAN_INTERVAL", interval or clip.get("interval", 1.0)))
     last = None
     print("esteban clipboard watcher running (Ctrl+C to stop)")
     try:
         while True:
-            text = get_text()
-            if text and len(text) <= 100_000:
-                h = hashlib.sha256(text.encode()).hexdigest()
-                if h != last:
-                    last = h
-                    app = active_app()
-                    if app in cfg.get("blacklist", []):
-                        time.sleep(interval)
-                        continue
-                    record(con, text, app, cfg)
-                    if cfg.get("autoExpandSnippets") and app not in cfg.get("autoExpandExcludedApps", []):
-                        auto_expand(con, text, cfg)
-                    expire(con, cfg)
+            last = check_once(con, cfg, last)
             time.sleep(interval)
     except KeyboardInterrupt:
         print()

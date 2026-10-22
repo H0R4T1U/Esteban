@@ -44,6 +44,12 @@ def build_results(query: str, con, cfg: dict, workflows_map: dict):
             item["mods"] = mods            # Alfred: mods = {modifier: {subtitle, arg, action}}
         return item
 
+    # Alfred's default results come from what you type: an empty box shows nothing until the first character.
+    # The usage ranking and the web fallback would otherwise fill the box with applications the moment it
+    # opens, which is what the box looked like on open.
+    if not query.strip():
+        return results
+
     # 1. workflow keyword trigger (Alfred: exact keyword outranks everything)
     wf = workflows.find_workflow(workflows_map, query)
     if wf:

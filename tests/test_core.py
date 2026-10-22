@@ -835,7 +835,7 @@ def test_toggle_opens_on_the_main_page():
     view that was last shown: it opens on the main page."""
     import sqlite3
 
-    from esteban import overlay
+    from esteban import overlay, theme
 
     if not overlay.HAVE_GTK:
         return
@@ -865,9 +865,13 @@ def test_toggle_opens_on_the_main_page():
         def queue_draw(self):
             pass
 
+        def set_size_request(self, width, height):
+            pass
+
     launcher = object.__new__(overlay.Launcher)
     launcher.con, launcher.cfg, launcher.results, launcher.sel, launcher.offset = con, cfg, [], 0, 0
     launcher.entry, launcher.area, launcher.policy = Entry(), Area(), "toplevel"
+    launcher.theme, launcher.max_visible = theme.load_theme({}), 10     # update_height sizes the panel from these
     launcher.show = lambda: None                        # no display in the test
     launcher.mode, launcher.query, launcher.entry.text = "clipboard", "old", "old"
 
@@ -884,6 +888,132 @@ def test_toggle_opens_on_the_main_page():
     launcher.handle("toggle", {})
     assert launcher.mode == "search" and launcher.query == ""
     con.close()
+
+
+def test_the_watcher_records_the_pasteboard_on_the_turn_that_notices_a_change():
+    """`checkPasteboard:` 0x48264 compares the pasteboard with `lastClipHash` 0x5330e8 and records what differs.
+
+    The turn and the loop are separate because the running launcher calls the turn from its main loop: that is
+    what fills the history the clipboard viewer reads, and a launcher that only records at exit shows nothing.
+    """
+    import sqlite3
+
+    from esteban import clipboard
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+    cfg = {"features": {"clipboard": {"enabled": True, "limit": 200, "fastAppend": False,
+                                      "blacklist": ["notes"], "autoExpandSnippets": False}}}
+
+    state = {"app": "firefox", "text": ""}
+    old_get, old_app = clipboard.get_text, clipboard.active_app
+    clipboard.get_text = lambda: state["text"]
+    clipboard.active_app = lambda: state["app"]
+    try:
+        last = clipboard.check_once(con, cfg, None)              # the turn that sees the copy records it
+        for app, text in [("firefox", "first copy"),             # same content as the previous turn
+                          ("notes", "notes copy"),               # blacklisted: not recorded, and not seen again
+                          ("firefox", "second copy"),
+                          ("firefox", "x" * 100_001)]:           # past the size the watcher reads
+            state.update({"app": app, "text": text})
+            last = clipboard.check_once(con, cfg, last)
+        assert [r[1] for r in clipboard.history(con)] == ["second copy", "first copy"]
+
+        # The launcher starts its watcher with the pasteboard it already sees, so content copied before it
+        # started is not treated as a copy; and a copy the launcher already recorded is not stored twice.
+        state.update({"app": "firefox", "text": "second copy"})
+        seeded = clipboard.check_once(con, cfg, None)
+        assert len(clipboard.history(con)) == 2                  # the hash dedupes the row
+        assert clipboard.check_once(con, cfg, seeded) == seeded
+        assert clipboard.check_once(con, cfg, seeded) == seeded  # an unchanged pasteboard records nothing
+    finally:
+        clipboard.get_text, clipboard.active_app = old_get, old_app
+    con.close()
+
+
+def test_an_empty_query_shows_nothing():
+    """Alfred's default results come from what you type, so an empty box shows nothing until the first character.
+
+    The usage ranking and the web fallback answered the empty query, which is why the box opened full of
+    applications. The viewers still list their rows for an empty filter: that is the history, not default results.
+    """
+    import sqlite3
+
+    from esteban import ui
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+    cfg = {"features": {"defaultresults": {"types": ["apps", "files", "snippets", "calculator", "web"],
+                                           "maxResults": 20, "fallbacks": {"enabled": False}},
+                        "calculator": {"enabled": True}},
+           "workflows": {"dir": "/tmp/no-workflows"}}
+
+    assert ui.build_results("", con, cfg, {}) == []
+    assert ui.build_results("   ", con, cfg, {}) == []
+    assert [r["type"] for r in ui.build_results("2+2", con, cfg, {})] == ["calculator"]
+    con.close()
+
+
+def test_the_box_is_as_tall_as_the_rows_it_shows():
+    """`visibleRows = min(numberOfRows, _maxVisibleRows)` decides the panel height, so before anything is typed
+    the window is the search field and there is no placeholder to draw."""
+    import cairo
+
+    from esteban import overlay, theme
+
+    if not overlay.HAVE_GTK:
+        return
+
+    t = theme.load_theme({})
+    row_h = theme.row_height(t)
+    drawn = []
+
+    class Area:
+        def set_size_request(self, width, height):
+            self.request = (width, height)
+
+    class Layout:
+        def set_text(self, text, n=-1):
+            drawn.append(text)
+
+        def get_pixel_size(self):
+            return (0, 0)
+
+        def set_width(self, width):
+            pass
+
+        def set_ellipsize(self, mode):
+            pass
+
+    class Widget:
+        def get_allocated_width(self):
+            return 600
+
+    launcher = object.__new__(overlay.Launcher)
+    launcher.theme, launcher.max_visible, launcher.results = t, 10, [{"type": "app"}] * 25
+    launcher.query, launcher.mode, launcher.options, launcher.mod_name = "", "search", {}, "Ctrl"
+    launcher.sel, launcher.offset, launcher.area = 0, 0, Area()
+    launcher.update_height()
+    assert launcher.area.request == (-1, row_h * 10)              # capped by maxVisibleRows
+
+    launcher.results = []
+    launcher.update_height()
+    assert launcher.area.request == (-1, 0)                       # nothing typed: the box is the search field
+
+    old_layout, old_show = overlay.make_layout, overlay.PangoCairo.show_layout
+    overlay.make_layout = lambda cr, spec: Layout()
+    overlay.PangoCairo.show_layout = lambda cr, layout: None
+    try:
+        launcher.draw_rows(Widget(), cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, row_h)))
+        assert drawn == ["Ctrl+C"]                                # the hint probe, no placeholder
+        launcher.query = "xyz"
+        drawn.clear()
+        launcher.draw_rows(Widget(), cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, row_h)))
+        assert drawn == ["Ctrl+C", "No results"]
+    finally:
+        overlay.make_layout, overlay.PangoCairo.show_layout = old_layout, old_show
 
 
 if __name__ == "__main__":

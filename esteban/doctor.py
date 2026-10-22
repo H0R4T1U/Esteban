@@ -84,7 +84,7 @@ def checks(cfg: dict) -> list[tuple[str, str]]:
                                  f"(max {dr.get('maxResults', 20)} per category)"))
 
     # clipboard backend
-    rows.append(("clipboard backend", clipboard._backend()))
+    rows.append(("clipboard backend", clipboard.backend()))
     rows.append(("paste tool", shutil.which("xdotool") or shutil.which("ydotool") or "none — paste is skipped"))
 
     # storage and IPC

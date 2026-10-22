@@ -187,6 +187,27 @@ def run(cfg: dict | None = None, con=None, bind_hotkey: bool = False) -> bool:
 
     GLib.idle_add(index_files)
 
+    seen = {"hash": None}
+
+    def poll_clipboard():
+        """One turn of `checkPasteboard:` 0x48264 from the main loop.
+
+        The clipboard viewer reads the history, and the history is filled by the polling turns: a launcher
+        that only records the pasteboard when it exits shows nothing while it runs.
+        """
+        try:
+            seen["hash"] = clipboard.check_once(con, cfg, seen["hash"])
+        except Exception as exc:
+            warn(f"clipboard poll failed ({exc})")
+        return True
+
+    clip = (cfg["features"].get("clipboard") or {})
+    if clip.get("enabled") and clipboard.backend() != "none":
+        # Alfred starts the watcher with lastClipHash, so what is already on the pasteboard when the launcher
+        # starts is not treated as a copy; the copies that arrive after it are.
+        seen["hash"] = clipboard.content_hash(clipboard.get_text())
+        GLib.timeout_add(int(float(clip.get("interval", 1.0)) * 1000), poll_clipboard)
+
     launcher.show()
     try:
         Gtk.main()
@@ -447,6 +468,15 @@ class Launcher:
         if self.sel >= len(self.results):
             self.sel = max(len(self.results) - 1, 0)
         self.offset = 0
+        self.update_height()
+
+    def update_height(self) -> None:
+        """`visibleRows = min(numberOfRows, _maxVisibleRows)` decides how tall the panel is.
+
+        The box was requested at the full `maxVisibleRows` height, so it opened as a tall empty panel before
+        anything had been typed. With no rows there is nothing to draw, and the window is the search field.
+        """
+        self.area.set_size_request(-1, theme.row_height(self.theme) * min(len(self.results), self.max_visible))
 
     def set_query(self, query: str) -> None:
         self.query = query
@@ -474,6 +504,8 @@ class Launcher:
         text_w = max(width - text_x - hint_w - pad_h, 20)
 
         if not self.results:
+            if not self.query:
+                return False              # nothing typed yet: an empty box draws nothing
             empty = make_layout(cr, t["subtext"])
             empty.set_text("No results", -1)
             cr.set_source_rgba(*color(t["subtext"]["color"]))
