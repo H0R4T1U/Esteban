@@ -17,13 +17,29 @@ from .fuzzy import fuzzy_like, score
 from . import apps as apps_mod
 
 FILETYPE_FILE = 0
+FILETYPE_FOLDER = 2
+
+
+def scan_roots(cfg: dict) -> list:
+    """Directories the index covers.
+
+    `features.filesearch.scan_dirs` wins when it is set; otherwise the index uses the default-results
+    scope, which is the scope the results box actually searches. Keeping one list means the rows the
+    user sees and the rows that are indexed cannot disagree.
+    """
+    fs = (cfg.get("features") or {}).get("filesearch") or {}
+    scope = ((cfg.get("features") or {}).get("defaultresults") or {}).get("scope") or ["~"]
+    dirs = fs.get("scan_dirs") or scope
+    return [expand(d) for d in dirs]
 
 
 def populate(con: sqlite3.Connection, cfg: dict) -> int:
-    fs = cfg["features"]["filesearch"]
-    roots = [expand(d) for d in fs["scan_dirs"]]
+    """Incremental scan: rows already in the index are left alone."""
+    fs = (cfg.get("features") or {}).get("filesearch") or {}
+    roots = scan_roots(cfg)
     exclude = set(fs.get("exclude_dirs", []))
-    max_files = fs["max_files"]
+    max_files = int(fs.get("max_files", 50000))
+    include_folders = fs.get("includeFolders", True)
     count = 0
     for root in roots:
         if not root.is_dir():
@@ -33,31 +49,62 @@ def populate(con: sqlite3.Connection, cfg: dict) -> int:
                 break
             if any(part in exclude for part in p.parts):
                 continue
-            if p.is_file() and not any(part.startswith(".") for part in p.parts):
-                n = p.name
-                # incremental index: Alfred re-scans and only adds what changed
-                if con.execute("SELECT 1 FROM files WHERE path = ?", (str(p),)).fetchone():
-                    continue
-                con.execute(
-                    "INSERT OR IGNORE INTO files (path, fileName, name, nameSearch, nameSplit, nameChars, lastUsed, keywords, altnames, filetype) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (str(p), n, n, apps_mod.normalize(n), apps_mod.initials(n), apps_mod.chars(n), 0, "", "", FILETYPE_FILE))
-                count += 1
+            if any(part.startswith(".") for part in p.parts):
+                continue
+            is_folder = p.is_dir()
+            if not (p.is_file() or (is_folder and include_folders)):
+                continue
+            n = p.name
+            if con.execute("SELECT 1 FROM files WHERE path = ?", (str(p),)).fetchone():
+                continue
+            con.execute(
+                "INSERT OR IGNORE INTO files (path, fileName, name, nameSearch, nameSplit, nameChars, lastUsed, keywords, altnames, filetype) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (str(p), n, n, apps_mod.normalize(n), apps_mod.initials(n), apps_mod.chars(n), 0, "", "",
+                 FILETYPE_FOLDER if is_folder else FILETYPE_FILE))
+            count += 1
+    prune(con, roots)
     con.commit()
     return count
 
 
+def prune(con: sqlite3.Connection, roots) -> int:
+    """Drop rows for paths that no longer exist — an index that only grows keeps answering for deleted files."""
+    removed = 0
+    for path in [r[0] for r in con.execute(
+            "SELECT path FROM files WHERE filetype IN (0, 2)").fetchall()]:
+        p = Path(path)
+        if any(p.is_relative_to(root) for root in roots) and not p.exists():
+            con.execute("DELETE FROM files WHERE path = ?", (path,))
+            removed += 1
+    return removed
+
+
+def ensure_index(con: sqlite3.Connection, cfg: dict) -> int:
+    """Populate the index once so the results box has something to answer with.
+
+    The GUI used to search an empty table: only `esteban index` and the TUI filled it. This runs the
+    first scan only when the table is empty, and afterwards only prunes, so opening the box stays fast.
+    """
+    rows = con.execute("SELECT count(*) FROM files WHERE filetype IN (0, 2)").fetchone()[0]
+    if rows:
+        return prune(con, scan_roots(cfg))
+    return populate(con, cfg)
+
+
 def search(con: sqlite3.Connection, query: str, limit: int = 20):
+    """File rows only. Application rows live in the same `files` table, so the filetype filter is what
+    keeps a broad query from turning the file results into an application list."""
     if not query:
         # Default results with no query: recently opened files (files.lastUsed)
         return con.execute(
-            "SELECT path, name, filetype FROM files WHERE filetype = 0 AND lastUsed > 0 "
+            "SELECT path, name, filetype FROM files WHERE filetype IN (0, 2) AND lastUsed > 0 "
             "ORDER BY lastUsed DESC LIMIT ?", (limit,)).fetchall()
 
     pat = fuzzy_like(query)
     out = []
     for path, name, ft in con.execute(
-            "SELECT path, name, filetype FROM files WHERE nameSearch LIKE ? OR nameSplit LIKE ?",
+            "SELECT path, name, filetype FROM files WHERE filetype IN (0, 2) AND (nameSearch LIKE ? OR nameSplit LIKE ?)",
             (pat, pat)):
         w = ranking.knowledge_weight(con, path, query) + ranking.strong_latch(con, query)
         last_used = con.execute("SELECT lastUsed FROM files WHERE path = ?", (path,)).fetchone()[0]

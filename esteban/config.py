@@ -26,6 +26,9 @@ DEFAULTS = {
         "options": {"showscrollbar": True, "hideshortcuts": False},
         "maxVisibleRows": 10,                 # AlfredSelectionList._maxVisibleRows
         "position": {"anchor": "top", "margin": 140},
+        # Not an Alfred key, because macOS has no icon themes: the row icon column on Linux comes from
+        # the freedesktop theme. Empty means "try the fallback themes in spec order".
+        "iconTheme": "",
         # Not an Alfred key. The measured window colour is #1E1E22E6 (alpha 0.90) drawn over an
         # NSVisualEffectView blur, and GTK has no blur, so on a compositor that cannot blur the
         # measured alpha reads as a flat film. The default here is opaque: on Linux nothing blurs, so
@@ -37,12 +40,19 @@ DEFAULTS = {
     "features": {
         "defaultresults": {
             "scope": ["~/Applications", "~", "~/Desktop", "~/Documents", "~/Downloads"],
+            # Alfred caps each default-results category on its own, which is why a broad query does not
+            # fill the list with applications. `types` is which categories may appear at all: removing
+            # "apps" from it keeps applications out of the results box completely.
+            "maxResults": 20,
+            "types": ["apps", "files", "snippets", "calculator", "web"],
             "fallbacks": {"enabled": True},
         },
         "filesearch": {
             "limit": 20,
-            "scan_dirs": ["~"],
+            # Indexed first, so the rows appear before the long scan of the whole home finishes.
+            "scan_dirs": ["~/Desktop", "~/Documents", "~/Downloads", "~"],
             "max_files": 50000,
+            "includeFolders": True,
             # Alfred's default indexing scope excludes system/cache locations;
             # esteban mirrors that with an explicit exclude list.
             "exclude_dirs": ["Library", ".cache", ".git", "node_modules", "venv",

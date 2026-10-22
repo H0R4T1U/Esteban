@@ -16,7 +16,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import clipboard, compositor, hotkey, ipc, overlay, store, theme
+from . import clipboard, compositor, filecache, hotkey, icons, ipc, overlay, store, theme, ui
 from .config import DATA_DIR, load_config
 
 
@@ -72,6 +72,17 @@ def checks(cfg: dict) -> list[tuple[str, str]]:
     rows.append(("panel alpha", f"{theme.window_alpha(t, cfg):.3f} (theme {t['window']['color']}; GTK has "
                                 "no blur, so a compositor that cannot blur shows it as a flat film)"))
 
+    # What the results box can answer with. A fresh install has neither of these, which is what made file
+    # search look broken and made every row draw a letter instead of an icon.
+    appearance = cfg.get("appearance") or {}
+    rows.append(("icon theme", appearance.get("iconTheme") or "fallback themes: " + ", ".join(icons.FALLBACK_THEMES)))
+    roots = [str(r) for r in icons.ICON_ROOTS if r.exists()]
+    rows.append(("icon roots", ", ".join(roots) or "none — rows fall back to the letter badge"))
+    rows.append(("file index", _index(cfg)))
+    dr = (cfg.get("features") or {}).get("defaultresults") or {}
+    rows.append(("result types", f"{', '.join(dr.get('types') or ui.DEFAULT_RESULT_TYPES)} "
+                                 f"(max {dr.get('maxResults', 20)} per category)"))
+
     # clipboard backend
     rows.append(("clipboard backend", clipboard._backend()))
     rows.append(("paste tool", shutil.which("xdotool") or shutil.which("ydotool") or "none — paste is skipped"))
@@ -87,6 +98,22 @@ def checks(cfg: dict) -> list[tuple[str, str]]:
     rows.append(("theme", cfg["appearance"]["theme"]))
     rows.append(("max visible rows", str(cfg["appearance"]["maxVisibleRows"])))
     return rows
+
+
+def _index(cfg: dict) -> str:
+    """Rows in the file index, and the directories it covers."""
+    scope = ", ".join(str(r) for r in filecache.scan_roots(cfg))
+    if not store.DB.exists():
+        return f"not created yet, scope: {scope}"
+    try:
+        con = store.connect()
+        try:
+            n = con.execute("SELECT count(*) FROM files WHERE filetype IN (0, 2)").fetchone()[0]
+            return f"{n} rows, scope: {scope}"
+        finally:
+            con.close()
+    except Exception as exc:
+        return f"not readable ({exc})"
 
 
 def _display(session: dict) -> str:

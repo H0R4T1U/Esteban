@@ -32,7 +32,7 @@ from __future__ import annotations
 import os
 import signal
 
-from . import actions, clipboard, compositor, ipc, store, theme, ui, workflows
+from . import actions, clipboard, compositor, filecache, icons, ipc, store, theme, ui, workflows
 from .config import load_config, warn
 
 ACTION_RUN, ACTION_UP, ACTION_DOWN, ACTION_PGUP, ACTION_PGDN, ACTION_COPY = 1, 4, 5, 6, 7, 11
@@ -107,19 +107,10 @@ def fallback_note(cfg: dict) -> str:
 def mod_action(item, mod_name: str) -> dict:
     """The row as it behaves while the action modifier is held (`mods` in the item contract).
 
-    Alfred stores mods as `{modifier: {subtitle, arg}}` and the mod never rewrites the stored
-    row, so this returns a copy; `actionFromEvent:` 0x2c918 dispatches that copy.
+    The contract lives in `ui.py`, so the GUI and the terminal launcher read the same row and the same
+    `mods`; Alfred's `actionFromEvent:` 0x2c918 dispatches the copy, never the stored row.
     """
-    item = dict(item)
-    spec = (item.get("mods") or {}).get(mod_name.lower()) or {}
-    if spec:
-        if spec.get("arg"):
-            item["arg"] = spec["arg"]
-        if spec.get("subtitle"):
-            item["subtitle"] = spec["subtitle"]
-        if spec.get("action"):
-            item["action"] = (spec["action"], spec.get("arg", item.get("arg", "")))
-    return item
+    return ui.mod_action(item, mod_name)
 
 
 def visible_row_for_action(action: int, offset: int, count: int) -> int | None:
@@ -177,6 +168,23 @@ def run(cfg: dict | None = None, con=None, bind_hotkey: bool = False) -> bool:
         listener = hotkey.bind(cfg, lambda: GLib.idle_add(launcher.show))
 
     signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(launcher.quit))
+
+    def index_files():
+        """The results box cannot answer for files until the index has rows.
+
+        `ensure_index` scans once, then only prunes, and it runs as an idle callback so the window shows
+        before the first scan. The results are rebuilt afterwards, because the box that opened over an
+        empty table showed nothing.
+        """
+        try:
+            if filecache.ensure_index(con, cfg):
+                launcher.rebuild()
+                launcher.area.queue_draw()
+        except Exception as exc:
+            warn(f"file index failed ({exc})")
+        return False
+
+    GLib.idle_add(index_files)
 
     launcher.show()
     try:
@@ -266,13 +274,24 @@ class Launcher:
         self.entry = Gtk.Entry()
         self.entry.set_has_frame(False)
         self.entry.set_placeholder_text("Search")
+        # calculateSearchFieldHeight 0x968e0: glyph height + 2 * search paddingVertical. Without this the
+        # entry takes whatever height the system theme hands it, which is why the field looked different
+        # on every desktop.
+        self.entry.set_size_request(window["width"] - 2 * window["paddingHorizontal"],
+                                    theme.search_field_height(self.theme))
 
         self.area = Gtk.DrawingArea()
         self.area.set_app_paintable(True)         # the panel behind the rows is drawn by draw_window, not by the system theme
         self.area.set_size_request(window["width"] - 2 * window["paddingHorizontal"],
                                    theme.row_height(self.theme) * self.max_visible)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        # `search.spacing` (8 px) is the measured gap between the field and the first row; the window
+        # padding (11 x 12) is the content inset, so nothing sits flush against the panel edge.
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=self.theme["search"]["spacing"])
+        box.set_margin_top(window["paddingVertical"])
+        box.set_margin_bottom(window["paddingVertical"])
+        box.set_margin_start(window["paddingHorizontal"])
+        box.set_margin_end(window["paddingHorizontal"])
         box.pack_start(self.entry, False, False, 0)
         box.pack_start(self.area, False, False, 0)
         self.window.add(box)
@@ -417,6 +436,23 @@ class Launcher:
         text_x = pad_h + icon_size + 1        # drawRect's text column, x = 32 with the default icon
         gap = t["textSpacing"]
 
+        # The hint column is reserved before the text is laid out: a long path stops before the shortcut
+        # instead of running underneath it.
+        hint_w = 0
+        if not self.options.get("hideshortcuts"):
+            probe = make_layout(cr, t["shortcut"])
+            probe.set_text(f"{self.mod_name}+C", -1)
+            hint_w = probe.get_pixel_size()[0] + pad_h
+        text_w = max(width - text_x - hint_w - pad_h, 20)
+
+        if not self.results:
+            empty = make_layout(cr, t["subtext"])
+            empty.set_text("No results", -1)
+            cr.set_source_rgba(*color(t["subtext"]["color"]))
+            cr.move_to(text_x, max(t["paddingVertical"], (row_h - empty.get_pixel_size()[1]) // 2))
+            PangoCairo.show_layout(cr, empty)
+            return False
+
         for i in range(visible):
             row = self.offset + i
             if row >= len(self.results):
@@ -434,8 +470,12 @@ class Launcher:
 
             title = make_layout(cr, t["text"])
             title.set_text(one_line(item["title"]), -1)
+            title.set_width(text_w)
+            title.set_ellipsize(Pango.EllipsizeMode.END)
             sub = make_layout(cr, t["subtext"])
             sub.set_text(one_line(item["subtitle"]), -1)
+            sub.set_width(text_w)
+            sub.set_ellipsize(Pango.EllipsizeMode.END)
             title_h, sub_h = title.get_pixel_size()[1], sub.get_pixel_size()[1]
             top = y + max(t["paddingVertical"], (row_h - (title_h + gap + sub_h)) // 2)
 
@@ -469,6 +509,8 @@ class Launcher:
 
     def draw_icon(self, cr, item, x, y, size):
         path = item.get("icon")
+        if path and not os.path.isabs(path):
+            path = icons.resolve(path, size, self.cfg)     # an icon-theme name from a desktop entry
         if path:
             pixbuf = self.pixbuf_cache.get(path)
             if pixbuf is None:

@@ -17,6 +17,9 @@ from .config import expand
 
 FILETYPE_APP = 1
 
+# `read_desktop` is on the row-building path, so entries are kept after the first read.
+_ENTRIES = {}
+
 APP_DIRS = [
     "/usr/share/applications",
     "/var/lib/flatpak/exports/share/applications",
@@ -31,7 +34,7 @@ def populate(con: sqlite3.Connection) -> int:
         if not base.is_dir():
             continue
         for entry in base.glob("*.desktop"):
-            name, execline, comment = read_desktop(entry)
+            name, execline, comment, icon = read_desktop(entry)
             if not name or not execline:
                 continue
             row = (str(entry), entry.stem, name,
@@ -44,15 +47,36 @@ def populate(con: sqlite3.Connection) -> int:
 
 
 def read_desktop(path: Path):
-    name = execline = comment = ""
-    for line in path.read_text(errors="replace").splitlines():
+    """Cached read of a `.desktop` entry: name, Exec line, Comment, Icon.
+
+    The rows ask for the same entry on every rebuild, so each file is read once.
+    """
+    key = str(path)
+    if key in _ENTRIES:
+        return _ENTRIES[key]
+    name = execline = comment = icon = ""
+    for line in Path(path).read_text(errors="replace").splitlines():
         if line.startswith("Name=") and not name:
             name = line[5:].strip()
         elif line.startswith("Exec="):
             execline = line[5:].strip()
         elif line.startswith("Comment=") and not comment:
             comment = line[8:].strip()
-    return name or path.stem, execline, comment
+        elif line.startswith("Icon=") and not icon:
+            icon = line[5:].strip()
+    entry = (name or Path(path).stem, execline, comment, icon)
+    _ENTRIES[key] = entry
+    return entry
+
+
+def comment_for(path: str) -> str:
+    """The subtitle Alfred shows for an application row: its `Comment=` line when it has one."""
+    return read_desktop(Path(path))[2]
+
+
+def icon_for(path: str) -> str:
+    """Icon name from `Icon=`, which is an icon-theme name or an absolute path."""
+    return read_desktop(Path(path))[3]
 
 
 def normalize(n: str) -> str:

@@ -55,6 +55,19 @@ From the live theme JSON and the decompiled formulas:
 | text column | drawRect x = 32 px (`iconPaddingHorizontal + icon + 1`) | `text_column_x()` |
 | action modifier | `advanced.shortcutmod` 1 → Control, otherwise Command/Super | `config["advanced"]["shortcutmod"]` |
 | panel alpha | window colour `#1E1E22E6` → 0.90, drawn over `NSVisualEffectView` blur (`blur` key 0) | `window_alpha()` |
+| content inset | window padding 11 × 12 around the content, `search.spacing` 8 px between the field and the first row | `overlay.py` (box margins and spacing) |
+
+### Row icons
+
+Alfred draws the bundle icon in the row's icon column; the Linux equivalent is the freedesktop icon theme,
+which `icons.py` resolves for the same column (`iconPaddingHorizontal` 7 + `iconSize` 30): the desktop
+entry's `Icon=` field first as an absolute path, then the theme directories in spec order (actions, apps,
+places, status, mimetypes), sized directories before scalable, the configured theme before the fallbacks,
+and PNG before SVG because GdkPixbuf renders SVG only when librsvg is present. File rows take the mimetype
+icon for the extension and the folder icon for a directory; a row whose icon cannot be resolved keeps the
+letter badge. `appearance.iconTheme` picks the theme — empty means the fallback list — and the title and
+subtitle are ellipsized so a long path stops before the hint column instead of running under it. When there
+is nothing to show the box prints "No results" rather than an empty panel.
 
 ## Architecture
 
@@ -66,6 +79,7 @@ esteban/
   ranking.py      knowledge weight + strong latching
   apps.py         XDG .desktop index (equivalent of Spotlight/LaunchServices)
   filecache.py    incremental index, tiers nameSearch/nameSplit/nameChars
+  icons.py        freedesktop icon theme resolution for the row icon column
   clipboard.py    watcher, dataHash dedupe, fastAppend, expiry, paste
   snippets.py     keyword > word-based > LIKE matching tiers, autoexpand
   placeholders.py {query}, {clipboard[:N][:format]}
@@ -104,8 +118,46 @@ Local REA working files — the `evidence/` JSON exports, the live-database copi
 - **Workflows**: `objects` + `connections` from `info.plist`; script-filter item contract
   `uid`/`title`/`subtitle`/`arg`/`quicklookurl`/`mods`; hotkey trigger metadata.
 - **Results box**: row height and radii as measured above, selection fade, `Down` wraps to row 0
-  (`highlightNext` 0xa1ad0), number keys with the action modifier fire the row's `mods` action.
+  (`highlightNext` 0xa1ad0), number keys with the action modifier fire the row's `mods` action. Enter runs
+  the stored default action and the action modifier reads `mods` without rewriting the row, so a file row
+  opens on Enter and copies on `Ctrl+C`; snippet, calculator, and clipboard rows copy because their default
+  action is a copy.
 - **Default hotkey**: Alt+Space, mirroring Alfred's Option+Space default.
+
+## File search, folders, and copying files
+
+The results box cannot answer for files until the index has rows, so `filecache.ensure_index()` runs as an
+idle callback when the overlay starts: the first run scans, later runs only prune rows whose path no longer
+exists. The directories covered are `features.filesearch.scan_dirs`, falling back to
+`features.defaultresults.scope` — the same scope the results box searches — and folders are indexed too, so
+a folder row can be opened.
+
+- **Enter** runs the row's default action: an app launches, a file or folder opens.
+- **Ctrl+C** (the action modifier) copies. On a file row that is the file itself as `text/uri-list`, which is
+  what a file manager pastes as a file; on a text row it is the text. `wl-copy --type` and `xclip -t` carry
+  the MIME type, and a backend that does not accept the option falls back to the path text.
+- **Ctrl+P** copies the path as text, **Ctrl+T** opens the folder in the terminal.
+- Each category is capped on its own (`features.defaultresults.maxResults`), which is what keeps a broad
+  query from turning the list into applications, and `features.defaultresults.types` decides which categories
+  may appear at all. Removing `"apps"` keeps applications out of the results box entirely. A query starting
+  with `/` is a file search in Alfred, so applications are not part of it.
+
+```json
+{
+  "appearance": { "iconTheme": "breeze" },
+  "features": {
+    "defaultresults": {
+      "maxResults": 20,
+      "types": ["files", "snippets", "calculator", "web"]
+    },
+    "filesearch": {
+      "limit": 20,
+      "scan_dirs": ["~/Desktop", "~/Documents", "~/Downloads", "~"],
+      "includeFolders": true
+    }
+  }
+}
+```
 
 ## Running on Linux (COSMIC, other Wayland compositors, X11)
 
@@ -357,11 +409,12 @@ behave like an overlay.
 
 ### GUI keys
 
-`Enter` runs the action · `Ctrl+C` copies · `Ctrl+P` copies the path · `Ctrl+T` opens in the
-terminal · `Ctrl+E` sends the paste keystroke · number keys with the action modifier run the
-row's `mods` action · `Up`/`Down` navigate (`Down` wraps) · `PgUp`/`PgDn` page · `Ctrl+V`
-clipboard viewer · `Ctrl+S` snippet viewer · `Esc` clears the query, then hides the window ·
-`Ctrl+Q` quits. The action modifier is Control when `advanced.shortcutmod` is 1, otherwise Super.
+`Enter` runs the row's action · `Ctrl+C` copies (on a file row that is the file itself, as
+`text/uri-list`) · `Ctrl+P` copies the path · `Ctrl+T` opens in the terminal · `Ctrl+E` sends the paste
+keystroke · number keys with the action modifier run the row's `mods` action · `Up`/`Down` navigate (`Down`
+wraps) · `PgUp`/`PgDn` page · `Ctrl+V` clipboard viewer · `Ctrl+S` snippet viewer · `Esc` clears the query,
+then hides the window · `Ctrl+Q` quits. The action modifier is Control when `advanced.shortcutmod` is 1,
+otherwise Super.
 
 Config: `~/.esteban/config.json` (defaults in `config.py`).
 Database: `~/.esteban/Databases/esteban.alfdb` using Alfred's table names.
@@ -375,18 +428,19 @@ Themes: `~/.esteban/themes/<name>.json` in Alfred's theme JSON schema (`alfredth
 python3 tests/test_core.py
 ```
 
-Nineteen tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
-count, strong latching, 30-day window), clipboard behaviours (dedupe, fastAppend, limit,
-moveToTopOnUse, persistence), the workflow `info.plist` / script-filter item contract, the theme
-geometry formulas, the action numbers and the visible-row mapping for number keys, the surface
-policy per compositor (COSMIC and GNOME get a plain window, wlroots-derived compositors get
-layer-shell, X11 a normal window, no display the TUI), the reason the results box reports when it
-cannot be drawn, the typelib lookup `doctor` prints, the panel alpha override, the COSMIC keybind entry
-(lowercase keysym names, two-argument `Spawn`) and its writer (RON map only, existing entries kept,
-nothing left beside the settings file), the launcher path being a real file when nothing is installed,
-the toggle IPC round-trip, the row contract shared by the TUI
-and the overlay, the environment report, and the fact that a missing helper prints one line instead of
-raising.
+Twenty-three tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
+count, strong latching, 30-day window), clipboard behaviours (dedupe, fastAppend, limit, moveToTopOnUse,
+persistence), the workflow `info.plist` / script-filter item contract, the theme geometry formulas, the
+action numbers and the visible-row mapping for number keys, the surface policy per compositor (COSMIC and
+GNOME get a plain window, wlroots-derived compositors get layer-shell, X11 a normal window, no display the
+TUI), the reason the results box reports when it cannot be drawn, the typelib lookup `doctor` prints, the
+panel alpha override, the COSMIC keybind entry (lowercase keysym names, one-string `Spawn`, comma-separated
+entries) and its writer (RON map only, existing entries kept, nothing left beside the settings file), the
+launcher path being a real file when nothing is installed, the toggle IPC round-trip, the row contract shared
+by the TUI and the overlay, the environment report, the icon-theme lookup order and the mimetype icon for a
+file row, the file index honouring the default-results scope and pruning paths that no longer exist, the
+per-category result cap and the `types` filter keeping applications out of the file rows, the `text/uri-list`
+body a file copy puts on the clipboard, and the fact that a missing helper prints one line instead of raising.
 
 ## Notes and limits
 

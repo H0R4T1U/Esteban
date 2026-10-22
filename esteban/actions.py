@@ -49,6 +49,19 @@ def action_copy_path(path: str, con, keyword: str) -> None:
     record_action(con, "copypath", path, keyword)
 
 
+def action_copy_file(path: str, con, keyword: str) -> bool:
+    """Copy the file itself to the clipboard.
+
+    Alfred's copy action on a file object puts a file reference on the pasteboard, so a file manager
+    pastes the file; the text of the path is a different action (`copypath`). On Linux that reference is
+    `text/uri-list`. When the backend cannot carry the MIME type this falls back to the path text, which
+    still records the copy.
+    """
+    copied = clipboard.set_uri_list([path])
+    record_action(con, "copyfile" if copied else "copypath", path, keyword)
+    return copied
+
+
 def action_copy_text(text: str, con, keyword: str, paste: bool = False) -> None:
     clipboard.set_text(text)
     if paste:

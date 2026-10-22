@@ -17,6 +17,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from pathlib import Path
 
 from . import store
 from .config import warn
@@ -81,6 +82,44 @@ def set_text(text: str) -> None:
             subprocess.run(["pbcopy"], input=text, text=True, timeout=2)
     except Exception as exc:
         warn(f"clipboard copy failed ({exc})")
+
+
+def uri_list(paths) -> str:
+    """The body of a `text/uri-list` selection: one file:// URI per line, the form a file manager pastes."""
+    return "\n".join(Path(str(p)).as_uri() for p in paths) + "\n"
+
+
+def set_uri_list(paths) -> bool:
+    """Copy file(s) as a file reference, not as text.
+
+    Only the Wayland and X11 backends can name a MIME type (`wl-copy --type`, `xclip -t`). When the
+    installed version does not accept the option, the plain paths are copied instead, so the action still
+    does something the user can paste.
+    """
+    body = uri_list(paths)
+    b = _backend()
+    if b == "none":
+        _warn_no_backend()
+        return False
+    text = "\n".join(str(Path(str(p))) for p in paths)
+    try:
+        if b == "wayland":
+            proc = subprocess.run(["wl-copy", "--type", "text/uri-list"], input=body, text=True, timeout=2)
+            if proc.returncode == 0:
+                return True
+            subprocess.run(["wl-copy"], input=text, text=True, timeout=2)
+        elif b == "x11":
+            proc = subprocess.run(["xclip", "-selection", "clipboard", "-t", "text/uri-list"],
+                                  input=body, text=True, timeout=2)
+            if proc.returncode == 0:
+                return True
+            subprocess.run(["xclip", "-selection", "clipboard"], input=text, text=True, timeout=2)
+        else:
+            subprocess.run(["pbcopy"], input=body, text=True, timeout=2)
+    except Exception as exc:
+        warn(f"clipboard copy failed ({exc})")
+        return False
+    return False
 
 
 def paste() -> None:

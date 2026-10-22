@@ -15,14 +15,34 @@ try:
 except ImportError:                                  # curses is optional: the GUI path needs none
     curses = None
 
-from . import apps, actions, clipboard, filecache, placeholders, ranking, snippets, store, websearch, workflows
+from . import apps, actions, clipboard, filecache, icons, placeholders, ranking, snippets, store, websearch, workflows
 from .config import load_config, warn
 
 CALC_RE = re.compile(r"^[\d\s\.\+\-\*/%\(\)\^,]+$|^(sqrt|sin|cos|tan|log|exp|round|floor|ceil|abs)\(")
 
+# Which categories the default results may show, and how many rows each may take. Alfred caps each
+# category on its own, which is why a broad query does not turn the list into only applications.
+DEFAULT_RESULT_TYPES = ["apps", "files", "snippets", "calculator", "web"]
+
 
 def build_results(query: str, con, cfg: dict, workflows_map: dict):
     results = []
+    features = cfg.get("features") or {}
+    dr = features.get("defaultresults") or {}
+    types = dr.get("types") or DEFAULT_RESULT_TYPES
+    cap = int(dr.get("maxResults", 20))
+    size = cfg_icon_size(cfg)
+
+    def show(category):
+        return category in types
+
+    def row(title, subtitle, kind, arg, action, icon=None, mods=None):
+        item = {"title": title, "subtitle": subtitle, "type": kind, "arg": arg, "action": action}
+        if icon:
+            item["icon"] = icon
+        if mods:
+            item["mods"] = mods            # Alfred: mods = {modifier: {subtitle, arg, action}}
+        return item
 
     # 1. workflow keyword trigger (Alfred: exact keyword outranks everything)
     wf = workflows.find_workflow(workflows_map, query)
@@ -30,41 +50,60 @@ def build_results(query: str, con, cfg: dict, workflows_map: dict):
         results.extend(workflows.run(workflows_map, query, con, cfg))
 
     # 2. calculator (features.calculator.enabled)
-    if query and CALC_RE.match(query.strip()):
+    if show("calculator") and query and CALC_RE.match(query.strip()):
         value = None
         try:
             from .calculator import evaluate, format_result
             value = evaluate(placeholders.process(query, "", con))
             if value is not None:
-                results.append({"title": format_result(value),
-                                "subtitle": "Copy to Clipboard (Ctrl+C)",
-                                "type": "calculator", "arg": format_result(value),
-                                "action": ("copy", format_result(value))})
+                results.append(row(format_result(value), "Copy to Clipboard (Ctrl+C)", "calculator",
+                                   format_result(value), ("copy", format_result(value))))
         except Exception:
             value = None
 
     # 3. snippets keyword
-    sn = snippets.match(con, query, cfg["features"]["snippets"]["wordBasedMatching"])
-    for uid, name, kw, text, coll in sn[:10]:
-        rendered = placeholders.process(text, query, con)
-        results.append({"title": name, "subtitle": f"{coll} · {rendered[:80]}",
-                        "type": "snippet", "arg": rendered, "action": ("copy", rendered)})
+    if show("snippets"):
+        sn = snippets.match(con, query, (features.get("snippets") or {}).get("wordBasedMatching", True))
+        for uid, name, kw, text, coll in sn[:cap]:
+            rendered = placeholders.process(text, query, con)
+            results.append(row(name, f"{coll} · {rendered[:80]}", "snippet", rendered,
+                               ("copy", rendered), icons.resolve("edit-paste", size, cfg)))
 
-    # 4. apps (default results: applications scope)
-    if not query.startswith("/"):
-        for path, name, used in apps.search(con, query, 15):
-            results.append({"title": name, "subtitle": "Application",
-                            "type": "app", "arg": path, "action": ("open", path)})
+    # 4. apps (default results: applications scope). A `/` query is a file search in Alfred, so apps
+    #    are not part of it. Each category is capped on its own so a broad query cannot fill the list
+    #    with applications, and `types` decides which categories may appear at all.
+    if show("apps") and not query.startswith("/"):
+        for path, name, used in apps.search(con, query, cap):
+            results.append(row(name, apps.comment_for(path) or "Application", "app", path,
+                               ("open", path), icons.resolve(apps.icon_for(path), size, cfg),
+                               {"ctrl": {"action": "copypath", "subtitle": "Copy Path to Clipboard"}}))
 
     # 5. file search
-    for path, name, ft in filecache.search(con, query, cfg["features"]["filesearch"]["limit"]):
-        results.append({"title": name, "subtitle": str(path),
-                        "type": "file", "arg": path, "action": ("open", path)})
+    if show("files"):
+        limit = min(cap, int((features.get("filesearch") or {}).get("limit", cap)))
+        for path, name, ft in filecache.search(con, query, limit):
+            # Enter opens the file; the action modifier copies it. Alfred's copy on a file object puts a
+            # file reference on the pasteboard (`text/uri-list` on Linux), which is what a file manager
+            # pastes; the path text stays on the copy-path action.
+            results.append(row(name, str(path), "file", path, ("open", path),
+                               icons.for_file(path, size, cfg),
+                               {"ctrl": {"action": "copyfile", "subtitle": "Copy File to Clipboard"}}))
 
     # 6. web search fallback (features.defaultresults.fallbacks)
-    if cfg["features"]["defaultresults"]["fallbacks"]["enabled"]:
+    if show("web") and dr.get("fallbacks", {}).get("enabled"):
         results.extend(websearch.results(con, query, cfg))
     return results
+
+
+def cfg_icon_size(cfg: dict) -> int:
+    """The row icon column: `appearance.iconSize` when set, otherwise the measured default.
+
+    The size only chooses which themed variant is picked, because the overlay scales the pixbuf to its own
+    `iconSize`, so the TUI and the GUI resolve the same name.
+    """
+    from . import theme
+
+    return int((cfg.get("appearance") or {}).get("iconSize") or theme.DEFAULT_THEME["result"]["iconSize"])
 
 
 def clipboard_results(con, query: str, cfg: dict, limit: int = 20):
@@ -90,12 +129,40 @@ def snippet_results(con, query: str, cfg: dict, limit: int = 20):
     return out
 
 
+def mod_action(item, mod_name: str) -> dict:
+    """The row as it behaves while the action modifier is held (`mods` in the item contract).
+
+    Alfred stores mods as `{modifier: {subtitle, arg, action}}` and the mod never rewrites the stored row,
+    so this returns a copy; `actionFromEvent:` 0x2c918 dispatches that copy.
+    """
+    item = dict(item)
+    spec = (item.get("mods") or {}).get(mod_name.lower()) or {}
+    if spec:
+        if spec.get("arg"):
+            item["arg"] = spec["arg"]
+        if spec.get("subtitle"):
+            item["subtitle"] = spec["subtitle"]
+        if spec.get("action"):
+            item["action"] = (spec["action"], spec.get("arg", item.get("arg", "")))
+    return item
+
+
 def shortcut_hint(item: dict, mod: str = "Cmd") -> str:
-    """Right-column hint, drawn with the alpha fade measured in drawRect: 0xa0b44."""
-    return item.get("shortcut") or (f"{mod}+C" if item["action"][0] == "copy" else "Enter")
+    """Right-column hint, drawn with the alpha fade measured in drawRect: 0xa0b44.
+
+    The hint is the row's action under the modifier: the copy key when the row copies under the action
+    modifier, which is also what snippet and clipboard rows show because their default action is a copy.
+    """
+    if item.get("shortcut"):
+        return item["shortcut"]
+    action = ((item.get("mods") or {}).get(mod.lower()) or {}).get("action") or item["action"][0]
+    return f"{mod}+C" if action in ("copy", "copyfile", "copypath") else "Enter"
 
 
-def action_for(item, con, cfg):
+def action_for(item, con, cfg, mod: str | None = None):
+    """Perform a row: the default action, or the modifier action when `mod` is held."""
+    if mod:
+        item = mod_action(item, mod)
     action = item["action"]
     kind, arg = action[0], action[1]
     kw = item.get("keyword", "")
@@ -106,6 +173,10 @@ def action_for(item, con, cfg):
             actions.action_open(arg, con, kw)
     elif kind == "copy":
         actions.action_copy_text(arg, con, kw)
+    elif kind == "copyfile":
+        actions.action_copy_file(arg, con, kw)
+    elif kind == "copypath":
+        actions.action_copy_path(arg, con, kw)
     elif kind == "openurl":
         websearch.open_url(arg, con)
     elif kind == "run":
@@ -156,6 +227,7 @@ def main_ui(stdscr, cfg: dict, con=None):
     con = con or store.connect()
     if not con.execute("SELECT COUNT(*) FROM files WHERE filetype = 1").fetchone()[0]:
         apps.populate(con)
+    filecache.ensure_index(con, cfg)
     workflows_map = workflows.load_workflows(cfg, con)
 
     mode = "search"
@@ -188,11 +260,11 @@ def main_ui(stdscr, cfg: dict, con=None):
             query, sel = "", 0
         elif ch == 17:  # Ctrl+Q
             break
-        elif ch == 3:   # Ctrl+C: copy selected
+        elif ch == 3:   # Ctrl+C: copy selected — the row's copy action, which for a file is the file
             if results:
                 item = results[min(sel, len(results) - 1)]
                 item["keyword"] = query
-                action_for(item, con, cfg)
+                action_for(item, con, cfg, "Ctrl")
         elif ch == 16:  # Ctrl+P: copy path
             if results and results[min(sel, len(results) - 1)].get("type") in ("app", "file"):
                 actions.action_copy_path(results[min(sel, len(results) - 1)]["arg"], con, query)

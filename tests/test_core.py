@@ -290,7 +290,8 @@ def test_doctor():
            "features": {"terminal": {"command": "x-terminal-emulator"}}}
     text = doctor.report(cfg)
     for key in ("compositor", "surface policy", "overlay (PyGObject)", "cairo", "clipboard backend",
-                "display server", "instance socket", "global hotkey", "panel alpha"):
+                "display server", "instance socket", "global hotkey", "panel alpha",
+                "icon theme", "icon roots", "file index", "result types"):
         assert key in text
 
 
@@ -432,6 +433,163 @@ def test_spawn_command_names_a_file():
         hotkey.shutil.which, hotkey.sys.executable = old_which, old_executable
         if old_bin:
             os.environ["ESTEBAN_BIN"] = old_bin
+
+
+def test_icon_resolution_follows_the_theme_spec():
+    """Rows show a real icon: an absolute path first, then the theme's sized directories, then scalable."""
+    import tempfile
+
+    from esteban import icons
+
+    root = Path(tempfile.mkdtemp())
+    theme_dir = root / "TestTheme"
+    (theme_dir / "apps" / "32x32").mkdir(parents=True)
+    (theme_dir / "mimetypes" / "scalable").mkdir(parents=True)
+    (theme_dir / "places" / "32x32").mkdir(parents=True)
+    (theme_dir / "apps" / "32x32" / "org.gnome.Terminal.png").write_text("")
+    (theme_dir / "mimetypes" / "scalable" / "text-x-generic.svg").write_text("")
+    (theme_dir / "places" / "32x32" / "inode-directory.png").write_text("")
+    (root / "notes.md").write_text("")
+    (root / "shots").mkdir()
+
+    old_roots, old_fallbacks = icons.ICON_ROOTS, icons.FALLBACK_THEMES
+    icons.ICON_ROOTS, icons.FALLBACK_THEMES = [root], ["TestTheme"]
+    icons.clear_cache()
+    cfg = {"appearance": {"iconTheme": "TestTheme"}}
+    try:
+        assert icons.resolve("org.gnome.Terminal", 32, cfg).endswith("apps/32x32/org.gnome.Terminal.png")
+        assert icons.resolve("text-x-generic", 32, cfg).endswith("mimetypes/scalable/text-x-generic.svg")
+        assert icons.resolve("no-such-icon", 32, cfg) is None
+
+        absolute = root / "literal.png"
+        absolute.write_text("")
+        assert icons.resolve(str(absolute), 32, cfg) == str(absolute)          # Icon= can be a path
+
+        # A file row takes the mimetype icon for its extension; a folder takes the folder icon.
+        assert icons.for_file(str(root / "notes.md"), 32, cfg).endswith("text-x-generic.svg")
+        assert icons.for_file(str(root / "shots"), 32, cfg).endswith("inode-directory.png")
+    finally:
+        icons.ICON_ROOTS, icons.FALLBACK_THEMES = old_roots, old_fallbacks
+        icons.clear_cache()
+
+
+def test_file_index_scans_the_scope_and_prunes():
+    """The GUI searched an empty table before: the index now covers the default-results scope."""
+    import sqlite3
+    import tempfile
+
+    from esteban import filecache
+
+    root = Path(tempfile.mkdtemp())
+    docs = root / "Documents"
+    docs.mkdir()
+    (docs / "report.pdf").write_text("")
+    (docs / "notes.md").write_text("")
+    (docs / "shots").mkdir()
+    (root / ".cache").mkdir()
+    (root / ".cache" / "skip.txt").write_text("")             # dot-directories are not indexed
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+    cfg = {"features": {"defaultresults": {"scope": [str(root)]},
+                        "filesearch": {"limit": 20, "scan_dirs": [], "max_files": 100,
+                                       "exclude_dirs": [], "includeFolders": True}}}
+
+    assert filecache.ensure_index(con, cfg) == 4              # the scope dir, two files, one folder
+    rows = filecache.search(con, "report", 20)
+    assert rows and rows[0][0] == str(docs / "report.pdf")
+    assert any(Path(p).is_dir() for p, n, ft in filecache.search(con, "shots", 20))
+
+    (docs / "report.pdf").unlink()
+    assert filecache.ensure_index(con, cfg) == 1              # a second call only prunes
+    assert filecache.search(con, "report", 20) == []
+    con.close()
+
+
+def test_file_results_do_not_contain_applications():
+    """Both live in the `files` table, so the filetype filter is what keeps the categories apart."""
+    import sqlite3
+    import tempfile
+
+    from esteban import apps, filecache, ui
+
+    root = Path(tempfile.mkdtemp())
+    app_dir = root / "applications"
+    app_dir.mkdir()
+    (app_dir / "firefox.desktop").write_text(
+        "[Desktop Entry]\nName=Firefox\nExec=firefox\nComment=Web browser\nIcon=firefox\n")
+    files = root / "files"
+    files.mkdir()
+    for name in ["firefox-install.log", "firefox-notes.txt", "firefox-theme.md"]:
+        (files / name).write_text("")
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+
+    old_dirs = apps.APP_DIRS
+    apps.APP_DIRS = [str(app_dir)]
+    try:
+        apps.populate(con)
+        cfg = {"appearance": {"iconTheme": ""},
+               "features": {"defaultresults": {"scope": [str(files)], "maxResults": 2,
+                                               "types": ["apps", "files"],
+                                               "fallbacks": {"enabled": False}},
+                            "filesearch": {"limit": 20, "scan_dirs": [str(files)], "max_files": 100,
+                                           "exclude_dirs": [], "includeFolders": True},
+                            "snippets": {"wordBasedMatching": True}}}
+        filecache.populate(con, cfg)
+        results = ui.build_results("firefox", con, cfg, {})
+
+        assert any(r["type"] == "app" for r in results)
+        assert not any(r["type"] == "file" and r["arg"].endswith(".desktop") for r in results)   # app rows stay in the app category
+        assert sum(1 for r in results if r["type"] == "file") <= 2             # per-category cap
+        assert results[0]["subtitle"] == "Web browser"                          # Comment= as subtitle
+
+        # Enter opens the file; the action modifier copies it, and the hint shows the copy key.
+        file_row = next(r for r in results if r["type"] == "file")
+        assert file_row["action"][0] == "open"
+        assert file_row["mods"]["ctrl"]["action"] == "copyfile"
+        assert ui.shortcut_hint(file_row, "Ctrl") == "Ctrl+C"
+        assert ui.mod_action(file_row, "Ctrl")["action"] == ("copyfile", file_row["arg"])
+
+        no_apps = dict(cfg, features=dict(cfg["features"],
+                                         defaultresults=dict(cfg["features"]["defaultresults"],
+                                                            types=["files"])))
+        assert all(r["type"] != "app" for r in ui.build_results("firefox", con, no_apps, {}))
+    finally:
+        apps.APP_DIRS = old_dirs
+    con.close()
+
+
+def test_copy_file_puts_a_file_reference_on_the_clipboard():
+    """Alfred's copy action on a file object pastes as a file, not as the path text."""
+    import sqlite3
+
+    from esteban import actions, clipboard
+
+    assert clipboard.uri_list(["/tmp/a file.txt"]) == "file:///tmp/a%20file.txt\n"
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+
+    old = clipboard.set_uri_list
+    clipboard.set_uri_list = lambda paths: True
+    try:
+        assert actions.action_copy_file("/tmp/x", con, "q")
+    finally:
+        clipboard.set_uri_list = old
+    assert con.execute("SELECT actionTypeUid FROM usedActions").fetchone()[0] == "copyfile"
+
+    clipboard.set_uri_list = lambda paths: False               # backend without the MIME type
+    try:
+        assert not actions.action_copy_file("/tmp/y", con, "q")
+    finally:
+        clipboard.set_uri_list = old
+    assert con.execute("SELECT actionTypeUid FROM usedActions ORDER BY ts").fetchall()[1][0] == "copypath"
+    con.close()
 
 
 if __name__ == "__main__":
