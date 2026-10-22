@@ -102,7 +102,7 @@ def execute_graph(wpath: str, start_uid: str, arg: str, con, cfg: dict) -> list:
             results.append({"title": "Opened URL", "subtitle": url.format(query=value), "arg": value})
         elif t in ("alfred.workflow.output.clipboard", "alfred.workflow.action.openfile"):
             text = current.get("text", value) or value
-            clipboard.set_text(text)
+            clipboard.copy_text(con, cfg, text)
             if current.get("autopaste"):
                 try:
                     subprocess.run(["xdotool", "key", "ctrl+v"], timeout=2)

@@ -44,26 +44,29 @@ def action_terminal(path: str, cfg: dict, con, keyword: str) -> None:
     record_action(con, "browseinterminal", path, keyword)
 
 
-def action_copy_path(path: str, con, keyword: str) -> None:
-    clipboard.set_text(str(path))
+def action_copy_path(path: str, con, keyword: str, cfg: dict | None = None) -> None:
+    clipboard.copy_text(con, cfg, str(path))
     record_action(con, "copypath", path, keyword)
 
 
-def action_copy_file(path: str, con, keyword: str) -> bool:
+def action_copy_file(path: str, con, keyword: str, cfg: dict | None = None) -> bool:
     """Copy the file itself to the clipboard.
 
     Alfred's copy action on a file object puts a file reference on the pasteboard, so a file manager
     pastes the file; the text of the path is a different action (`copypath`). On Linux that reference is
     `text/uri-list`. When the backend cannot carry the MIME type this falls back to the path text, which
     still records the copy.
+
+    Both forms go through `clipboard.copy_*` so the copy also gets a history row: the pasteboard watcher
+    records what it sees on the pasteboard, and a copy the launcher performs is not something it sees.
     """
-    copied = clipboard.set_uri_list([path])
+    copied = clipboard.copy_file(con, cfg, [path])
     record_action(con, "copyfile" if copied else "copypath", path, keyword)
     return copied
 
 
-def action_copy_text(text: str, con, keyword: str, paste: bool = False) -> None:
-    clipboard.set_text(text)
+def action_copy_text(text: str, con, keyword: str, paste: bool = False, cfg: dict | None = None) -> None:
+    clipboard.copy_text(con, cfg, text)
     if paste:
         try:
             subprocess.run(["xdotool", "key", "ctrl+v"], timeout=2)

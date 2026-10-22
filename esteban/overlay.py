@@ -590,8 +590,13 @@ class Launcher:
 
     def on_key(self, widget, event):
         action = self.action_number(event)
-        if action in (ACTION_RUN, ACTION_COPY):
+        if action == ACTION_RUN:
             self.perform(self.offset + self.sel)
+            return True
+        if action == ACTION_COPY:
+            # `actionFromEvent:` 0x2c918 dispatches the copy the action modifier defines, so Ctrl+C on a file
+            # row is the file copy, not the row's default action. The TUI reads the same `mods`.
+            self.perform(self.offset + self.sel, self.mod_name)
             return True
         if action == ACTION_UP:
             self.sel = max(self.sel - 1, 0)
@@ -659,20 +664,22 @@ class Launcher:
         """Direct action row (0xa15e0): fire the row's `mods` entry for the action modifier."""
         if row < 0 or row >= len(self.results):
             return
-        self.perform_item(mod_action(self.results[row], self.mod_name))
+        self.perform(row, self.mod_name)
 
-    def perform(self, index: int) -> None:
+    def perform(self, index: int, mod: str | None = None) -> None:
         if not self.results or index < 0 or index >= len(self.results):
             return
-        self.perform_item(self.results[index])
+        self.perform_item(self.results[index], mod)
 
-    def perform_item(self, item) -> None:
+    def perform_item(self, item, mod: str | None = None) -> None:
         item["keyword"] = self.query
-        follow = ui.action_for(item, self.con, self.cfg)
+        follow = ui.action_for(item, self.con, self.cfg, mod)
         if follow:
             self.results = follow
             self.offset, self.sel = 0, 0
             self.mode = "search"
+        elif self.mode == "clipboard" and item["action"][0] in ("copy", "copyfile", "copypath"):
+            self.rebuild()          # the history changed, so the viewer shows the copy
         self.area.queue_draw()
 
     def on_entry_changed(self, entry):
@@ -685,13 +692,17 @@ class Launcher:
 
     def handle(self, command: str, payload: dict) -> dict:
         if command == "toggle":
-            self.show() if not self.window.get_visible() else self.window.hide()
+            if self.window.get_visible():
+                self.window.hide()
+            else:
+                self.open_main()
         elif command == "show":
-            self.show()
+            self.open_main()
         elif command == "hide":
             self.window.hide()
         elif command == "query":
             query = str(payload.get("query", ""))
+            self.mode = "search"                  # a query is the main page, not the last view
             self.entry.set_text(query)
             self.set_query(query)
             self.show()
@@ -699,6 +710,18 @@ class Launcher:
             self.quit()
         return {"ok": True, "mode": self.mode, "rows": len(self.results),
                 "policy": self.policy, "pid": os.getpid()}
+
+    def open_main(self) -> None:
+        """Open the box on the default results view.
+
+        The clipboard and snippet views are reached from inside the box with their own keys, so coming back
+        through the hotkey does not restore the view that was last shown: the box opens on the main page with
+        an empty search box.
+        """
+        self.mode = "search"
+        self.entry.set_text("")
+        self.set_query("")
+        self.show()
 
     def show(self) -> None:
         self.window.show_all()

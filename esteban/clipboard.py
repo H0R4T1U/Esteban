@@ -6,7 +6,9 @@ Behavior copied from REA evidence in AlfredClipboardManager:
   - fastAppend merges consecutive copies into the latest row
   - moveToTopOnUse: UPDATE clipboard SET ts = ? WHERE rowid = ?
   - expiry: DELETE FROM clipboard WHERE ts < ? AND dataType = ?
-The Linux clipboard is accessed through wl-clipboard (Wayland) or xclip (X11).
+The Linux clipboard is accessed through wl-clipboard (Wayland) or xclip (X11). A copy the launcher makes is
+recorded here as well: `checkPasteboard:` sees the pasteboard, so the watcher is not what records the copies
+the launcher itself performs.
 """
 from __future__ import annotations
 
@@ -120,6 +122,38 @@ def set_uri_list(paths) -> bool:
         warn(f"clipboard copy failed ({exc})")
         return False
     return False
+
+
+def _record_copy(con, cfg, text: str, app: str = "") -> None:
+    """A copy is a pasteboard write and a history row.
+
+    `checkPasteboard:` 0x48264 records what it sees on the pasteboard, so a copy the launcher makes has to be
+    recorded by the caller: the watcher is not what notices the launcher's own write. `features.clipboard.enabled`
+    is the switch for the history, so a copy with the feature off still goes to the pasteboard but is not stored.
+    """
+    clipboard_cfg = ((cfg or {}).get("features") or {}).get("clipboard") or {}
+    if not clipboard_cfg.get("enabled", True):
+        return
+    record(con, text, app or active_app() or "esteban", cfg)
+
+
+def copy_text(con, cfg, text: str, app: str = "") -> str:
+    """Copy text and record the copy in the history."""
+    set_text(text)
+    _record_copy(con, cfg, text, app)
+    return text
+
+
+def copy_file(con, cfg, paths, app: str = "") -> bool:
+    """Copy file(s) as a file reference and record the copy.
+
+    The history keeps the path text, not the `text/uri-list` body: the history shows text rows, and the path is
+    what a file row shows and what re-copying from history gives back. Only the text data type is measured in the
+    REA report (0x206eff), so no second data type is invented here.
+    """
+    copied = set_uri_list(paths)
+    _record_copy(con, cfg, "\n".join(str(Path(str(p))) for p in paths), app)
+    return copied
 
 
 def paste() -> None:

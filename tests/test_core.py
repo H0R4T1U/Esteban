@@ -740,6 +740,152 @@ def test_copy_file_puts_a_file_reference_on_the_clipboard():
     con.close()
 
 
+def test_copies_are_recorded_in_the_history():
+    """A copy is a pasteboard write and a history row.
+
+    `checkPasteboard:` 0x48264 records what it sees on the pasteboard, so the copies the launcher itself
+    performs have to be recorded by the action: the watcher is not what notices them.
+    """
+    import sqlite3
+
+    from esteban import actions, clipboard
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+    cfg = {"features": {"clipboard": {"enabled": True, "limit": 200, "fastAppend": False}}}
+
+    written = []
+    old_text, old_uri = clipboard.set_text, clipboard.set_uri_list
+    clipboard.set_text = lambda text: written.append(("text", text)) or True
+    clipboard.set_uri_list = lambda paths: written.append(("uri", [str(p) for p in paths])) or True
+    try:
+        assert actions.action_copy_file("/tmp/report.pdf", con, "report", cfg)
+        actions.action_copy_text("hello", con, "hello", cfg=cfg)
+    finally:
+        clipboard.set_text, clipboard.set_uri_list = old_text, old_uri
+
+    assert written == [("uri", ["/tmp/report.pdf"]), ("text", "hello")]           # the file stays a file reference
+    assert [r[1] for r in clipboard.history(con)] == ["hello", "/tmp/report.pdf"]  # newest first
+
+    # The history is the feature: with it off the pasteboard still gets the copy, and nothing is stored.
+    written.clear()
+    clipboard.set_text = lambda text: written.append(("text", text)) or True
+    try:
+        actions.action_copy_text("quiet", con, "q", cfg={"features": {"clipboard": {"enabled": False}}})
+    finally:
+        clipboard.set_text = old_text
+    assert written == [("text", "quiet")] and len(clipboard.history(con)) == 2
+    con.close()
+
+
+def test_copy_key_performs_the_action_modifier_copy():
+    """Ctrl+C dispatches the row's `mods` entry, so on a file row it copies the file instead of opening it.
+
+    The action modifier is what `actionFromEvent:` 0x2c918 reads; the stored row is not rewritten, and the
+    copy shows in the clipboard viewer because the history changed.
+    """
+    import sqlite3
+
+    from esteban import actions, clipboard, overlay
+
+    if not overlay.HAVE_GTK:
+        return
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+    cfg = {"features": {"clipboard": {"enabled": True, "limit": 200, "fastAppend": False}}}
+    row = {"title": "report.pdf", "subtitle": "/tmp/report.pdf", "type": "file", "arg": "/tmp/report.pdf",
+           "action": ("open", "/tmp/report.pdf"), "mods": {"ctrl": {"action": "copyfile", "arg": "/tmp/report.pdf"}}}
+
+    opened, copied = [], []
+    old_open, old_uri = actions.action_open, clipboard.set_uri_list
+    actions.action_open = lambda path, con, kw: opened.append(path)
+    clipboard.set_uri_list = lambda paths: copied.append([str(p) for p in paths]) or True
+
+    class Event:
+        keyval = overlay.Gdk.KEY_c
+        state = overlay.Gdk.ModifierType.CONTROL_MASK
+
+    class Area:
+        def queue_draw(self):
+            pass
+
+    launcher = object.__new__(overlay.Launcher)
+    launcher.con, launcher.cfg, launcher.query, launcher.results = con, cfg, "report", [row]
+    launcher.offset, launcher.sel, launcher.mode = 0, 0, "clipboard"
+    launcher.mod_name, launcher.mod_mask = "Ctrl", overlay.Gdk.ModifierType.CONTROL_MASK
+    launcher.area = Area()
+
+    try:
+        assert launcher.action_number(Event()) == overlay.ACTION_COPY
+        launcher.on_key(None, Event())
+    finally:
+        actions.action_open, clipboard.set_uri_list = old_open, old_uri
+
+    assert copied == [["/tmp/report.pdf"]] and not opened              # the mod action, not the stored row
+    assert row["action"][0] == "open"
+    assert [r[1] for r in clipboard.history(con)] == ["/tmp/report.pdf"]
+    con.close()
+
+
+def test_toggle_opens_on_the_main_page():
+    """The clipboard and snippet views are reached from inside the box, so the hotkey does not restore the
+    view that was last shown: it opens on the main page."""
+    import sqlite3
+
+    from esteban import overlay
+
+    if not overlay.HAVE_GTK:
+        return
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+    cfg = {"features": {"clipboard": {"enabled": True, "limit": 200},
+                        "snippets": {"wordBasedMatching": True}},
+           "workflows": {"dir": "/tmp/no-workflows"}}
+
+    class Entry:
+        def set_text(self, text):
+            self.text = text
+
+    class Window:
+        def __init__(self, visible):
+            self.visible = visible
+
+        def get_visible(self):
+            return self.visible
+
+        def hide(self):
+            self.visible = False
+
+    class Area:
+        def queue_draw(self):
+            pass
+
+    launcher = object.__new__(overlay.Launcher)
+    launcher.con, launcher.cfg, launcher.results, launcher.sel, launcher.offset = con, cfg, [], 0, 0
+    launcher.entry, launcher.area, launcher.policy = Entry(), Area(), "toplevel"
+    launcher.show = lambda: None                        # no display in the test
+    launcher.mode, launcher.query, launcher.entry.text = "clipboard", "old", "old"
+
+    launcher.window = Window(False)
+    launcher.handle("toggle", {})
+    assert launcher.mode == "search" and launcher.query == "" and launcher.entry.text == ""
+
+    # The key that opened the clipboard viewer selected that view while the box was open; closing the box
+    # does not decide what the next open shows.
+    launcher.mode, launcher.query, launcher.entry.text = "snippets", "em", "em"
+    launcher.window = Window(True)
+    launcher.handle("toggle", {})
+    assert not launcher.window.get_visible() and launcher.mode == "snippets"
+    launcher.handle("toggle", {})
+    assert launcher.mode == "search" and launcher.query == ""
+    con.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

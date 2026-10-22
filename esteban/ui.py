@@ -179,11 +179,11 @@ def action_for(item, con, cfg, mod: str | None = None):
         else:
             actions.action_open(arg, con, kw)
     elif kind == "copy":
-        actions.action_copy_text(arg, con, kw)
+        actions.action_copy_text(arg, con, kw, cfg=cfg)
     elif kind == "copyfile":
-        actions.action_copy_file(arg, con, kw)
+        actions.action_copy_file(arg, con, kw, cfg=cfg)
     elif kind == "copypath":
-        actions.action_copy_path(arg, con, kw)
+        actions.action_copy_path(arg, con, kw, cfg=cfg)
     elif kind == "openurl":
         websearch.open_url(arg, con)
     elif kind == "run":
@@ -274,7 +274,7 @@ def main_ui(stdscr, cfg: dict, con=None):
                 action_for(item, con, cfg, "Ctrl")
         elif ch == 16:  # Ctrl+P: copy path
             if results and results[min(sel, len(results) - 1)].get("type") in ("app", "file"):
-                actions.action_copy_path(results[min(sel, len(results) - 1)]["arg"], con, query)
+                actions.action_copy_path(results[min(sel, len(results) - 1)]["arg"], con, query, cfg)
         elif ch == 20:  # Ctrl+T: terminal
             if results and results[min(sel, len(results) - 1)].get("type") in ("app", "file"):
                 actions.action_terminal(results[min(sel, len(results) - 1)]["arg"], cfg, con, query)
