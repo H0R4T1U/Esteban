@@ -249,7 +249,7 @@ The policy is decided once, from the session (`compositor.py`, printed by `esteb
 | Session | Surface | Why |
 |---|---|---|
 | Hyprland, Sway, Wayfire, River, KDE Plasma (KWin), other wlroots-derived compositors | wlr-layer-shell overlay | an exclusive layer surface is the only way a client sits above everything, and it gets keyboard focus when mapped |
-| COSMIC (cosmic-comp) | wlr-layer-shell overlay | COSMIC decorates a plain toplevel with its own rounded frame around the whole surface, which is what made the box read as a framed window. Measured on a live COSMIC session: it takes the layer surface, gives it keyboard focus when the top edge is anchored, does not decorate it, and keeps the connection alive across the hide/show cycle the toggle performs. The old caution about committing on a roleless surface still holds — the window is never destroyed after it is unmapped. |
+| COSMIC (cosmic-comp) | wlr-layer-shell overlay | COSMIC decorates a plain toplevel with its own rounded frame around the whole surface, which is what makes a box that sizes itself to its content read as a framed window; a layer surface is not decorated, and the connection survived three hide/show cycles with the layer-shell policy on a live session. That path needs the `GtkLayerShell` typelib (`gtk-layer-shell`), and without it `overlay.py` falls back to a plain window and says so. The old caution about committing on a roleless surface still holds — the box never destroys a surface after it is unmapped. |
 | GNOME | plain undecorated window | Mutter does not implement layer-shell |
 | X11 | normal undecorated window | no layer-shell protocol |
 | no display session | the TUI in `ui.py` | nothing to draw on |
@@ -423,9 +423,11 @@ WantedBy=default.target
 ```
 
 On wlroots compositors (Hyprland, Sway, KWin, Wayfire, COSMIC) an exclusive layer-shell surface receives
-keyboard focus when it is mapped, so hiding and re-showing it keeps the typing path working — measured on a
-live COSMIC session, where the focus events arrive again after each hide/show cycle. On GNOME the overlay is
-an ordinary window and focus follows the usual window rules.
+keyboard focus when it is mapped, so hiding and re-showing it keeps the typing path working. On GNOME the
+overlay is an ordinary window and focus follows the usual window rules. On the live COSMIC session the focus
+events arrived on the first show and again after every hide/show cycle — that measurement was of the
+plain-window fallback, because the typelib was not installed there, so it has to be repeated on a session that
+can actually make a layer surface.
 
 ### GUI keys
 

@@ -232,7 +232,6 @@ Two rules in esteban come from the compositor side rather than from Alfred, and 
 shape of `overlay.py`: cosmic-comp reports a commit on a surface whose role has already been
 destroyed as a protocol violation and drops the client's connection, so the results box never
 destroys a surface after it has been unmapped and quitting leaves the main loop instead of
-destroying the window. On COSMIC the box is a layer surface — measured on a live session, the hide/show
-cycle the toggle performs keeps the connection and the focus, and a layer surface is not drawn inside the
-compositor's own window frame, which a plain toplevel there is. On GNOME it stays a plain window, because
-Mutter has no layer-shell.
+destroying the window. On COSMIC the box is a layer surface, because a layer surface is not drawn inside the
+compositor's window frame while a plain toplevel there is, and the hide/show cycle the toggle performs kept the
+connection on a live session. On GNOME it stays a plain window, because Mutter has no layer-shell.

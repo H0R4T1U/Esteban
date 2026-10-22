@@ -33,10 +33,10 @@ NONE = "none"
 # Compositors where hiding and re-showing a layer surface is the normal pattern.
 LAYER_SHELL_COMPOSITORS = {
     "Hyprland", "Sway", "Wayfire", "River", "KDE Plasma (KWin)", "Cocoa (Wayland)",
-    # Measured on a live COSMIC session: cosmic-comp takes the layer surface, hands it keyboard focus when the
-    # top edge is anchored, and does not draw its window frame around it. A plain toplevel there gets the
-    # compositor's decoration border around the whole surface, which is what made the box read as a framed
-    # window instead of the panel.
+    # A plain toplevel on COSMIC gets the compositor's own decoration frame around the whole surface, which is
+    # what made the box read as a framed window. A layer surface is not decorated, and cosmic-comp takes it: on
+    # a live session the hide/show cycle the toggle performs keeps the connection. That path needs the
+    # GtkLayerShell typelib, and overlay.py says so when the session does not have it.
     "COSMIC",
 }
 

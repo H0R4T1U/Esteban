@@ -387,6 +387,12 @@ class Launcher:
         if self.policy == compositor.LAYER_SHELL and HAVE_SHELL and GtkLayerShell.is_supported():
             self.use_layer_shell()
         else:
+            if self.policy == compositor.LAYER_SHELL:
+                # The policy wants a layer surface but the typelib is not installed, so this is the fallback:
+                # a plain window, which the compositor decorates around the whole surface. Saying which part
+                # is missing is what makes the frame readable as a missing package rather than as the app's look.
+                warn("the layer-shell typelib is not installed, so the box is a plain window and the "
+                     "compositor draws its frame around it")
             self.window.set_position(Gtk.WindowPosition.CENTER)
 
     def rgba_visual(self):
