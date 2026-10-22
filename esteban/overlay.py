@@ -104,6 +104,20 @@ def fallback_note(cfg: dict) -> str:
     return ""
 
 
+def x11_through_xwayland(session: dict, has_typelib: bool = HAVE_SHELL,
+                        x11_display: str | None = None) -> bool:
+    """Whether the box should be an X11 window on a Wayland session.
+
+    A layer-shell policy is only a surface the client can build when the typelib is present. Without it the
+    alternative that keeps the look is XWayland: GTK3 sets the Motif no-decorations hint on an X11 window, and on
+    a live COSMIC session cosmic-comp left that window with no titlebar and no outline, and the client could
+    change its size afterwards (the window followed the rows, 117 -> 214 -> 117 px). A plain Wayland toplevel
+    gets neither, so the X11 window is the fallback before the decorated window is.
+    """
+    x11_display = x11_display if x11_display is not None else os.environ.get("DISPLAY")
+    return session.get("policy") == compositor.LAYER_SHELL and not has_typelib and bool(x11_display)
+
+
 def mod_action(item, mod_name: str) -> dict:
     """The row as it behaves while the action modifier is held (`mods` in the item contract).
 
@@ -129,6 +143,12 @@ def run(cfg: dict | None = None, con=None, bind_hotkey: bool = False) -> bool:
     session = compositor.detect()
     if session["policy"] == compositor.NONE:
         return False
+
+    if x11_through_xwayland(session):
+        # GDK chooses its backend when it is initialized, so the fallback has to be decided before init_check.
+        os.environ.setdefault("GDK_BACKEND", "x11")
+        warn("the layer-shell typelib is not installed, so the box is an X11 window through XWayland: it has no "
+             "titlebar or frame there and it can follow its rows. Install gtk-layer-shell for the layer surface.")
 
     if not Gtk.init_check():
         warn("Gtk cannot be initialized in this session — using the terminal launcher")
@@ -305,7 +325,9 @@ class Launcher:
         self.cfg = cfg
         self.con = con
         self.session = session
-        self.policy = session["policy"]
+        # What the box can actually be built as: the session's policy, or an X11 window through XWayland when the
+        # layer-shell policy has no typelib to build from.
+        self.policy = compositor.X11 if x11_through_xwayland(session) else session["policy"]
         self.theme = theme.load_theme(cfg)
         self.alpha = theme.window_alpha(self.theme, cfg)
 
@@ -349,7 +371,9 @@ class Launcher:
         # height it was mapped at and has to be mapped with room for the rows from the start; there the panel is
         # drawn only over the content (`draw_window`) so the box still follows the results.
         self.panel_width = window["width"] - 2 * window["paddingHorizontal"]
-        self.follows_content = session.get("compositor") not in compositor.NO_CLIENT_RESIZE_COMPOSITORS
+        # An X11 window is resized by the client, so through XWayland on a COSMIC session the box can be as tall
+        # as the rows it shows (measured there: the window followed the rows, 117 -> 214 -> 117 px).
+        self.follows_content = self.follows_surface_size(session)
         self.area.set_size_request(self.panel_width,
                                    0 if self.follows_content else theme.row_height(self.theme) * self.max_visible)
 
@@ -388,9 +412,10 @@ class Launcher:
             self.use_layer_shell()
         else:
             if self.policy == compositor.LAYER_SHELL:
-                # The policy wants a layer surface but the typelib is not installed, so this is the fallback:
-                # a plain window, which the compositor decorates around the whole surface. Saying which part
-                # is missing is what makes the frame readable as a missing package rather than as the app's look.
+                # The policy wants a layer surface and neither the typelib nor an XWayland display is available,
+                # so this is the last fallback: a plain Wayland window, which the compositor decorates around the
+                # whole surface. Saying which part is missing is what makes the frame readable as a missing
+                # package rather than as the app's look.
                 warn("the layer-shell typelib is not installed (gtk-layer-shell), so the box is a plain window "
                      "and the compositor draws its frame and titlebar around it")
             self.window.set_position(Gtk.WindowPosition.CENTER)
@@ -487,6 +512,12 @@ class Launcher:
         self.box.set_margin_bottom(inset + t["paddingVertical"])
         self.box.set_margin_start(inset + t["paddingHorizontal"])
         self.box.set_margin_end(inset + t["paddingHorizontal"])
+
+    def follows_surface_size(self, session: dict) -> bool:
+        """Whether the surface can change size after it is mapped. An X11 window can, through XWayland on a
+        COSMIC session as well; a Wayland surface on COSMIC keeps the size it was mapped with."""
+        return session.get("policy") == compositor.X11 or (
+            session.get("compositor") not in compositor.NO_CLIENT_RESIZE_COMPOSITORS)
 
     def shadow_width(self) -> int:
         """The shadow only exists where the surface can blend it; without an RGBA visual the penumbra would

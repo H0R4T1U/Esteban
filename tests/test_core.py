@@ -346,7 +346,7 @@ def test_direct_action_rows():
 def test_surface_policy():
     """One policy per compositor (compositor.py): layer-shell on wlroots-derived compositors including COSMIC,
     a plain window on GNOME, normal window on X11, TUI with no display."""
-    from esteban import compositor
+    from esteban import compositor, overlay
 
     def env(**kw):
         return {k: v for k, v in kw.items() if v}
@@ -373,6 +373,15 @@ def test_surface_policy():
     # mapped on either kind, which is why overlay.py draws the panel to the content there.
     assert "window frame" in compositor.reason(compositor.LAYER_SHELL, "COSMIC")
     assert "COSMIC" in compositor.NO_CLIENT_RESIZE_COMPOSITORS
+
+    # A layer-shell policy is only a surface the client can build when the typelib is present. Without it the
+    # fallback that keeps the look is the X11 window through XWayland, which on a live COSMIC session had no
+    # titlebar and no outline and could be resized by the client; without XWayland the only thing left is the
+    # plain window the compositor decorates.
+    assert overlay.x11_through_xwayland({"policy": "layer-shell"}, has_typelib=False, x11_display=":1")
+    assert not overlay.x11_through_xwayland({"policy": "layer-shell"}, has_typelib=True, x11_display=":1")
+    assert not overlay.x11_through_xwayland({"policy": "layer-shell"}, has_typelib=False, x11_display=None)
+    assert not overlay.x11_through_xwayland({"policy": "toplevel"}, has_typelib=False, x11_display=":1")
 
 
 def test_overlay_reports_why_it_cannot_draw():
@@ -1077,10 +1086,11 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
     assert launcher.area.request == (launcher.panel_width, 0)            # nothing typed: the box is the field
     assert launcher.content_height() == box_h
 
-    # COSMIC keeps the size a surface was mapped at, so the window keeps room for the rows there and the panel
-    # is drawn only over the content, which is what makes the box follow the results.
+    # COSMIC keeps the size a Wayland surface was mapped at, so the window keeps room for the rows there and the
+    # panel is drawn only over the content, which is what makes the box follow the results.
     launcher.session = {"compositor": "COSMIC", "policy": "toplevel"}
-    launcher.follows_content = launcher.session["compositor"] not in compositor.NO_CLIENT_RESIZE_COMPOSITORS
+    launcher.follows_content = launcher.follows_surface_size(launcher.session)
+    assert not launcher.follows_content                # the size a surface is mapped with is the size it keeps
     launcher.area.set_size_request(launcher.panel_width, row_h * launcher.max_visible)   # what the constructor asks for
     launcher.results = [{"type": "app"}] * 2
     launcher.update_height()
@@ -1093,6 +1103,11 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
         assert set(panels) == {box_h + row_h * 2}       # the panel is the content, not the window
     finally:
         overlay.rounded_rect = old_rounded
+
+    # Through XWayland the same COSMIC session gets an X11 window, and an X11 window is resized by the client:
+    # measured on the live session the window followed the rows, 117 -> 214 -> 117 px.
+    launcher.session = {"compositor": "COSMIC", "policy": "x11"}
+    assert launcher.follows_surface_size(launcher.session)
 
     launcher.results = []
     old_layout, old_show = overlay.make_layout, overlay.PangoCairo.show_layout

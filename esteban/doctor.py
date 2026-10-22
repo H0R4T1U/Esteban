@@ -48,6 +48,8 @@ def checks(cfg: dict) -> list[tuple[str, str]]:
     shell = "yes" if overlay.HAVE_SHELL else "no — install gtk-layer-shell"
     if session["policy"] != compositor.LAYER_SHELL:
         shell += f" (not used: policy is {session['policy']})"
+    elif not overlay.HAVE_SHELL and os.environ.get("DISPLAY"):
+        shell += " (no typelib, so the box runs as an X11 window through XWayland)"
     rows.append(("layer-shell typelib", shell))
     rows.append(("curses", "yes" if _has("curses") else "no"))
     rows.append(("stdin/stdout is a tty", "yes" if sys.stdin.isatty() and sys.stdout.isatty() else
