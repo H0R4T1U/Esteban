@@ -117,10 +117,18 @@ def search(con: sqlite3.Connection, query: str, limit: int = 20):
     return [(p, n, int(ranking.knowledge_weight(con, p, query) > 0)) for s, p, n in results[:limit]]
 
 
+def exec_command(execline: str) -> list:
+    """The `Exec=` line as an argv list. The field codes stand for files or URLs a launcher does not pass, so
+    the tokens carrying them are dropped."""
+    return [tok for tok in execline.split() if "%f" not in tok and "%u" not in tok]
+
+
 def launch(desktop_path: str, con: sqlite3.Connection, keyword: str) -> None:
     import subprocess
-    name, execline, _ = read_desktop(Path(desktop_path))
-    cmd = [tok for tok in execline.split() if "%f" not in tok and "%u" not in tok]
+    # `read_desktop` returns name, Exec, Comment, Icon; taking the entry by index is what the other callers do,
+    # and unpacking three names here was what made Enter on an application row raise instead of launching it.
+    execline = read_desktop(Path(desktop_path))[1]
+    cmd = exec_command(execline)
     subprocess.Popen(cmd, start_new_session=True)
     store.add_knowledge(con, desktop_path, keyword)
     store.latch(con, desktop_path, keyword, strong=False)

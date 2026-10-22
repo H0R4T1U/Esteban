@@ -556,6 +556,37 @@ def test_spawn_command_names_a_file():
             os.environ["ESTEBAN_BIN"] = old_bin
 
 
+def test_launch_runs_the_desktop_entry():
+    """Enter on an application row runs its `Exec=` line. `read_desktop` returns name, Exec, Comment and Icon,
+    so the unpack in `launch` has to take all four — taking three is what made Enter raise on the live session."""
+    import sqlite3
+    import subprocess
+    import tempfile
+
+    from esteban import apps, ranking, store
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+
+    desktop = Path(tempfile.mkdtemp()) / "firefox.desktop"
+    desktop.write_text("[Desktop Entry]\nName=Firefox\nExec=firefox %u\nComment=Web browser\nIcon=firefox\n")
+    assert len(apps.read_desktop(desktop)) == 4
+
+    launched = []
+    real_popen = subprocess.Popen
+    subprocess.Popen = lambda cmd, **kw: launched.append(cmd)
+    try:
+        apps.launch(str(desktop), con, "firefox")
+    finally:
+        subprocess.Popen = real_popen
+
+    assert launched == [["firefox"]]                                  # the field code is dropped
+    assert apps.exec_command("flatpak run org.mozilla.firefox %f") == ["flatpak", "run", "org.mozilla.firefox"]
+    assert ranking.knowledge_weight(con, str(desktop), "firefox") > 0    # the launch was recorded
+    con.close()
+
+
 def test_icon_resolution_follows_the_theme_spec():
     """Rows show a real icon: an absolute path first, then the theme's size directories in either order,
     nearest to the row's icon size first, then scalable, then the fallback themes."""
