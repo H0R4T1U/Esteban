@@ -920,13 +920,28 @@ def test_the_watcher_records_the_pasteboard_on_the_turn_that_notices_a_change():
             last = clipboard.check_once(con, cfg, last)
         assert [r[1] for r in clipboard.history(con)] == ["second copy", "first copy"]
 
-        # The launcher starts its watcher with the pasteboard it already sees, so content copied before it
-        # started is not treated as a copy; and a copy the launcher already recorded is not stored twice.
+        # A copy the launcher makes and the same copy read back on the next turn have to be one row: the read
+        # through wl-clipboard ends with a newline that the copy itself did not have.
+        old_set = clipboard.set_text
+        clipboard.set_text = lambda text: None
+        try:
+            clipboard.copy_text(con, cfg, "round trip")
+            state.update({"app": "esteban", "text": "round trip\n"})
+            last = clipboard.check_once(con, cfg, "not-the-previous-hash")
+            assert len(clipboard.history(con)) == 3
+            assert [r[1] for r in clipboard.history(con)] == ["round trip", "second copy", "first copy"]
+        finally:
+            clipboard.set_text = old_set
+
+        # A turn that has seen nothing yet records what it reads, and the turns after it record nothing until
+        # the pasteboard changes. The launcher seeds its watcher with the pasteboard it already sees, so content
+        # copied before it started is not treated as a copy.
         state.update({"app": "firefox", "text": "second copy"})
         seeded = clipboard.check_once(con, cfg, None)
-        assert len(clipboard.history(con)) == 2                  # the hash dedupes the row
+        assert len(clipboard.history(con)) == 3                     # the hash dedupes the row it already has
         assert clipboard.check_once(con, cfg, seeded) == seeded
-        assert clipboard.check_once(con, cfg, seeded) == seeded  # an unchanged pasteboard records nothing
+        assert clipboard.check_once(con, cfg, seeded) == seeded     # an unchanged pasteboard records nothing
+        assert clipboard.content_hash("second copy\n") == clipboard.content_hash("second copy")
     finally:
         clipboard.get_text, clipboard.active_app = old_get, old_app
     con.close()

@@ -128,8 +128,13 @@ def set_uri_list(paths) -> bool:
 
 
 def content_hash(text: str) -> str:
-    """The `lastClipHash` 0x5330e8 comparison value."""
-    return hashlib.sha256(text.encode()).hexdigest()
+    """The `lastClipHash` 0x5330e8 comparison value.
+
+    Read through wl-clipboard the pasteboard ends with a newline the copy itself did not have, so the hash is
+    taken over the content without it: otherwise the watcher sees the launcher's own copy as a new change on
+    the next turn and records it a second time.
+    """
+    return hashlib.sha256(text.rstrip("\n").encode()).hexdigest()
 
 
 def _record_copy(con, cfg, text: str, app: str = "") -> None:
@@ -185,6 +190,9 @@ def paste() -> None:
 
 def record(con: sqlite3.Connection, text: str, app: str = "", cfg: dict | None = None) -> bool:
     cfg = (cfg or {}).get("features", {}).get("clipboard", {})
+    # The pasteboard read through wl-clipboard ends with a newline that the copy did not have; a copy the
+    # launcher makes and the same copy seen by the watcher have to be the same row.
+    text = text.rstrip("\n")
     if not text or len(text) > 100_000:
         return False
     h = content_hash(text)
