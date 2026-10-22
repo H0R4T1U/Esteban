@@ -210,13 +210,17 @@ the panel reads muddy, and the rounded corners let the desktop show through.
 
 | Value | Effect |
 |---|---|
-| `"theme"` (default) | the measured alpha, 0.90 |
-| `"off"` | opaque panel — what the same colours read as on a compositor without blur |
+| `"off"` (default) | opaque panel in the measured colour `#1E1E22`, which reads as solid black |
+| `"theme"` | the measured alpha, 0.90 — flat on any compositor that cannot blur |
 | `0`–`1` | the alpha to use |
 
-Compositors that blur (KWin, Hyprland with a blur plugin) keep the measured value and look closer to
-Alfred. On COSMIC the practical setting is `off`, or something near `0.96`. Only the panel behind the
-rows changes; the row, selection, text and border colours stay as measured.
+The default is opaque because nothing on Linux blurs: the same colour that reads as frosted glass on
+macOS reads as a translucent film over the wallpaper here. Compositors that blur (KWin, Hyprland with a
+blur plugin) are where `"theme"` looks closer to Alfred. Only the panel behind the rows changes; the row,
+selection, text and border colours stay as measured. When the panel is opaque it is filled as the whole
+window rectangle rather than only the rounded rectangle, so it does not depend on the compositor honouring
+surface alpha — otherwise the corners are cleared and read as black, which is the black square around the
+panel.
 
 ```json
 // ~/.esteban/config.json
@@ -232,6 +236,10 @@ Two other things that read as "bad" and are worth checking on a COSMIC session:
 - **The compositor's decoration.** An undecorated GTK3 window on COSMIC still gets the compositor's own
   rounded corners, shadow and active hint, which can double up with the 32 px radius drawn here. A client
   cannot change that; an opaque panel is what removes the visible mismatch.
+- **The system theme painting over the rows.** COSMIC themes GTK3 apps, so a `DrawingArea` that is not
+  app-paintable receives the theme's opaque background — a solid block inside the panel, with the panel
+  colour only around it. The rows area is app-paintable with a transparent CSS background, so the panel is
+  drawn by one fill and the rows draw on top of it.
 
 ### Global hotkey
 
@@ -274,8 +282,24 @@ read the file again (relogin, or `systemctl --user restart cosmic-settings-daemo
 entry is not picked up on your build, add the same shortcut through COSMIC Settings — that path is the
 reliable one (pop-os/cosmic-epoch#2481).
 
+If the key does nothing, check in this order:
+
+1. `cat ~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom` — the entry has to be inside the
+   map, with `key: "space"` as written by the file, and the command as an absolute path.
+2. `esteban keybind` — it says whether the entry is in the file, whether the launcher path resolves, and
+   whether anything is answering on the socket.
+3. Test the key on its own before blaming esteban: bind Alt+Space to `/usr/bin/touch` with argument
+   `/tmp/keypress`. If the file appears, the compositor is grabbing the key and the problem is on the
+   esteban side; if it does not, the chord never reaches the compositor (`wev` shows whether a key reaches
+   an app).
+4. The key only fires a command, and the command needs a listening instance: run `esteban daemon` in a
+   terminal and press the key — the terminal prints `toggle -> running instance`. Nothing visible happens
+   when nothing is listening, because a shortcut spawns a process with no terminal to print in.
+5. Restart the settings daemon (`systemctl --user restart cosmic-settings-daemon`) or log out and back in
+   after editing the file.
+
 `Super` already opens the COSMIC launcher, so pick a free key. `esteban doctor` prints the
-instructions for the session it is run in.
+instructions for the session it is run in, the panel alpha in effect, and the state of the keybind file.
 
 Other compositors:
 

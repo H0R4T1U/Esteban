@@ -264,6 +264,7 @@ class Launcher:
         self.entry.set_placeholder_text("Search")
 
         self.area = Gtk.DrawingArea()
+        self.area.set_app_paintable(True)         # the panel behind the rows is drawn by draw_window, not by the system theme
         self.area.set_size_request(window["width"] - 2 * window["paddingHorizontal"],
                                    theme.row_height(self.theme) * self.max_visible)
 
@@ -310,12 +311,15 @@ class Launcher:
         provider.load_from_data(
             (".esteban-search { font-family: \"%s\"; font-size: %dpx; padding: %dpx %dpx; "
              "background-color: transparent; color: %s; caret-color: %s; border: none; }\n"
+              ".esteban-rows { background-color: transparent; border: none; }\n"
              % (search["text"].get("font") or "Sans", search["text"]["size"],
                 search["paddingVertical"], search["paddingHorizontal"],
                 theme.css_color(search["text"]["color"]),
                 theme.css_color(search["text"]["colorSelected"]))).encode())
         self.entry.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.entry.get_style_context().add_class("esteban-search")
+        self.area.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.area.get_style_context().add_class("esteban-rows")
 
     def use_layer_shell(self) -> None:
         """An exclusive overlay surface. Anchoring the top edge is what lets the compositor
@@ -363,8 +367,15 @@ class Launcher:
         w, h = widget.get_allocated_width(), widget.get_allocated_height()
         r, g, b, _ = theme.parse_color(t["color"])
         cr.set_source_rgba(r, g, b, self.alpha)
-        rounded_rect(cr, 0, 0, w, h, t["roundness"])
-        cr.fill()
+        if self.alpha >= 1.0:
+            # An opaque panel must not depend on the compositor honouring surface alpha: the area
+            # outside the rounded rectangle would be cleared and read as black, which is the black
+            # square around the panel people complain about. Fill the whole window instead.
+            cr.rectangle(0, 0, w, h)
+            cr.fill()
+        else:
+            rounded_rect(cr, 0, 0, w, h, t["roundness"])
+            cr.fill()
         if t.get("borderPadding"):
             cr.set_source_rgba(*theme.parse_color(t["borderColor"]))
             rounded_rect(cr, 0, 0, w, h, t["roundness"])

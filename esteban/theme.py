@@ -106,7 +106,7 @@ def window_alpha(t: dict, cfg: dict | None = None) -> float:
     blur; GTK has no blur, so the measured alpha reads as a flat translucent film over the
     wallpaper on a compositor that cannot blur (COSMIC, Mutter). On those sessions 1.0 is what
     makes the same colours read correctly, and wlroots compositors with blur plugins keep the
-    measured value.
+    measured value, so the default in `config.DEFAULTS` is `"off"`.
     """
     value = ((cfg or {}).get("appearance", {}) or {}).get("transparency", "theme")
     if isinstance(value, (int, float)):

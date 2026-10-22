@@ -318,7 +318,9 @@ def test_transparency_override():
     from esteban import config, theme
 
     t = {"window": {"color": "#1E1E22E6"}}
-    assert theme.window_alpha(t, config.DEFAULTS) == 230 / 255            # the measured value
+    assert config.DEFAULTS["appearance"]["transparency"] == "off"          # opaque by default
+    assert theme.window_alpha(t, config.DEFAULTS) == 1.0
+    assert theme.window_alpha(t, {"appearance": {"transparency": "theme"}}) == 230 / 255   # the measured value
     assert theme.window_alpha(t, {"appearance": {"transparency": "theme"}}) == 230 / 255
     assert theme.window_alpha(t, {"appearance": {"transparency": "off"}}) == 1.0
     assert theme.window_alpha(t, {"appearance": {"transparency": 0.75}}) == 0.75
