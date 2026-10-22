@@ -154,6 +154,97 @@ def test_theme_formulas():
     assert theme.css_color("#FFFFFF00") == "rgba(255, 255, 255, 0.000)"
 
 
+def test_text_column_width_is_in_pango_units():
+    """`pango_layout_set_width` takes Pango units, not pixels.
+
+    Passing the pixel width wrapped the row text at half a pixel, so every title and subtitle came out as
+    one character and an ellipsis. The conversion is what makes the text column read as text.
+    """
+    from esteban import overlay, theme
+
+    if not (overlay.HAVE_GTK and overlay.HAVE_CAIRO):
+        return
+
+    import cairo
+
+    cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 640, 80))
+    layout = overlay.make_layout(cr, theme.DEFAULT_THEME["result"]["text"])
+    layout.set_text("x" * 400, -1)
+    layout.set_ellipsize(overlay.Pango.EllipsizeMode.END)
+
+    assert overlay.pango_units(500) == 500 * overlay.Pango.SCALE
+    layout.set_width(overlay.pango_units(500))
+    assert abs(layout.get_pixel_size()[0] - 500) <= 2          # the wrap width is honoured
+    layout.set_width(500)
+    assert layout.get_pixel_size()[0] < 60                     # half a pixel: one character and the ellipsis
+
+    # The theme's sizes are pixels, and the row-height formula uses them as pixels; Pango's `size` is
+    # points, which renders 1.33x larger at 96 dpi and makes the text block taller than the row.
+    desc = overlay.font_description({"font": "Sans", "size": 16})
+    assert desc.get_size() == 16 * overlay.Pango.SCALE and desc.get_size_is_absolute()
+
+
+def test_rounded_rect_walks_the_corners():
+    """The path is traced corner to corner; starting it at an arc folds the path over itself."""
+    from esteban import overlay
+
+    if not overlay.HAVE_CAIRO:
+        return
+
+    import math
+
+    import cairo
+
+    w, h, r = 60, 40, 10
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+    cr = cairo.Context(surface)
+    cr.set_source_rgb(1, 1, 1)
+    overlay.rounded_rect(cr, 0, 0, w, h, r)
+    cr.fill()
+
+    expected = w * h - r * r * (4 - math.pi)
+    data = surface.get_data()                                  # ARGB32 bytes, little-endian: BGRA
+    filled = sum(1 for i in range(0, len(data), 4) if data[i])
+    assert abs(filled - expected) < 40                         # a folded path fills a fraction of this
+    assert data[0] == 0                                        # outside the corner radius is not filled
+    assert data[4 * (r * w + r)] != 0                          # inside it is
+
+
+def test_panel_corners_depend_on_the_session_alpha():
+    """The panel keeps the roundness the theme measures when the session can composite it.
+
+    Without an RGBA visual the pixels outside the rounded rectangle are not transparent but undefined, and
+    read as a black square around the panel, so an opaque panel in that case fills the whole window.
+    """
+    from esteban import overlay, theme
+
+    if not (overlay.HAVE_GTK and overlay.HAVE_CAIRO):
+        return
+
+    import cairo
+
+    class Alloc:
+        def __init__(self, w, h):
+            self.w, self.h = w, h
+
+        def get_allocated_width(self):
+            return self.w
+
+        def get_allocated_height(self):
+            return self.h
+
+    def corner_pixel(rgba):
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 60, 40)
+        cr = cairo.Context(surface)
+        launcher = object.__new__(overlay.Launcher)
+        launcher.theme, launcher.alpha, launcher.rgba = theme.DEFAULT_THEME, 1.0, rgba
+        launcher.draw_window(Alloc(60, 40), cr)
+        return surface.get_data()[0]
+
+    assert corner_pixel(True) == 0                             # transparent outside the radius
+    assert corner_pixel(False) != 0                            # the black square the drawing avoids
+
+
 def test_action_numbers():
     """AlfredKeystrokeHelper::actionFromEvent: 0x2c918 values mirrored in overlay.py."""
     from esteban import overlay
@@ -210,6 +301,17 @@ def test_row_contract():
     row = ui.clipboard_results(con, "", {"features": {"snippets": {}}})[0]
     assert row["type"] == "clip" and row["arg"] == "copied"
     assert ui.shortcut_hint({"action": ("open", "/tmp")}, "Ctrl") == "Enter"
+
+    # A builder that does not go through `ui.row()` still has to carry the contract's type, which is what
+    # decides the hint the row is drawn with.
+    from esteban import websearch
+
+    wcfg = {"features": {"websearch": {"sites": {"google": {"name": "Google",
+                                               "url": "https://www.google.com/search?q={query}"}},
+                                      "fallback": "google", "historyEnabled": True}}}
+    websearch.remember_url(con, "https://example.com/report")
+    rows = websearch.results(con, "report", wcfg)
+    assert all(r["type"] == "websearch" for r in rows) and len(rows) == 2
     con.close()
 
 
@@ -436,7 +538,8 @@ def test_spawn_command_names_a_file():
 
 
 def test_icon_resolution_follows_the_theme_spec():
-    """Rows show a real icon: an absolute path first, then the theme's sized directories, then scalable."""
+    """Rows show a real icon: an absolute path first, then the theme's size directories in either order,
+    nearest to the row's icon size first, then scalable, then the fallback themes."""
     import tempfile
 
     from esteban import icons
@@ -468,6 +571,16 @@ def test_icon_resolution_follows_the_theme_spec():
         # A file row takes the mimetype icon for its extension; a folder takes the folder icon.
         assert icons.for_file(str(root / "notes.md"), 32, cfg).endswith("text-x-generic.svg")
         assert icons.for_file(str(root / "shots"), 32, cfg).endswith("inode-directory.png")
+
+        # hicolor is size-first (`hicolor/128x128/apps/firefox.png`), so that order is searched too, and a
+        # row icon takes the nearest size larger than the row instead of a smaller file scaled up: the row
+        # draws at `iconSize`, so 128 px scaled down reads better than 16 px scaled up.
+        (theme_dir / "128x128" / "apps").mkdir(parents=True)
+        (theme_dir / "16x16" / "places").mkdir(parents=True)
+        (theme_dir / "128x128" / "apps" / "firefox.png").write_text("")
+        (theme_dir / "16x16" / "places" / "firefox.png").write_text("")
+        icons.clear_cache()
+        assert icons.resolve("firefox", 30, cfg).endswith("128x128/apps/firefox.png")
     finally:
         icons.ICON_ROOTS, icons.FALLBACK_THEMES = old_roots, old_fallbacks
         icons.clear_cache()
@@ -501,9 +614,44 @@ def test_file_index_scans_the_scope_and_prunes():
     assert rows and rows[0][0] == str(docs / "report.pdf")
     assert any(Path(p).is_dir() for p, n, ft in filecache.search(con, "shots", 20))
 
+    # The scan is incremental, so a second run inserts nothing new and drops the row for the gone file.
     (docs / "report.pdf").unlink()
-    assert filecache.ensure_index(con, cfg) == 1              # a second call only prunes
+    assert filecache.ensure_index(con, cfg) == 0
     assert filecache.search(con, "report", 20) == []
+    con.close()
+
+
+def test_application_rows_do_not_stop_the_file_scan():
+    """`apps.populate` writes into the same table, and one application row inside the scope made the index
+    look complete: the box answered for applications and never for the user's files."""
+    import sqlite3
+    import tempfile
+
+    from esteban import apps, filecache
+
+    root = Path(tempfile.mkdtemp())
+    app_dir = root / "applications"
+    app_dir.mkdir()
+    (app_dir / "firefox.desktop").write_text("[Desktop Entry]\nName=Firefox\nExec=firefox\nIcon=firefox\n")
+    (root / "notes.md").write_text("")
+
+    con = sqlite3.connect(":memory:")
+    for stmt in store.SCHEMA:
+        con.execute(stmt)
+
+    old_dirs = apps.APP_DIRS
+    apps.APP_DIRS = [str(app_dir)]
+    cfg = {"features": {"defaultresults": {"scope": [str(root)]},
+                        "filesearch": {"limit": 20, "scan_dirs": [], "max_files": 100,
+                                       "exclude_dirs": [], "includeFolders": True}}}
+    try:
+        assert apps.populate(con) == 1
+        # The scan still ran: the app row was already in the table, so the count is the app directory and
+        # the file, not the whole table.
+        assert filecache.ensure_index(con, cfg) == 2
+        assert filecache.search(con, "notes", 20)
+    finally:
+        apps.APP_DIRS = old_dirs
     con.close()
 
 

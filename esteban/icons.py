@@ -6,23 +6,31 @@ equivalent is the freedesktop icon theme, which is what this module resolves. No
 the lookup is plain paths, so it also works when the overlay falls back to the terminal launcher.
 
 Lookup order follows the freedesktop Icon Theme spec: an absolute path from the desktop entry first, then
-the theme's sized directories, then scalable, then the fallback themes. A PNG is preferred over an SVG
-because GdkPixbuf only renders SVG when librsvg is present.
+the theme's size directories nearest to the row's icon size, then scalable, then the fallback themes. A PNG
+is preferred over an SVG because GdkPixbuf only renders SVG when librsvg is present.
+
+The spec allows either order inside a theme and real themes use both, so both are searched: hicolor is
+`hicolor/128x128/apps/firefox.png` (size first) while breeze is `breeze/apps/48/firefox.svg` (category
+first). Searching only the category order resolves nothing on hicolor, which is what made every row fall
+back to the letter badge.
 """
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from .config import DEFAULTS, expand
 
 ICON_ROOTS = [Path("/usr/share/icons"), Path("/usr/share/pixmaps"), expand("~/.local/share/icons")]
 
-# Spec order: an icon name is looked up in the action category first, then the others.
-CATEGORIES = ["actions", "apps", "places", "status", "mimetypes", "categories"]
+# Spec order: an icon name is looked up in the action category first, then the others. `legacy` is not in
+# the spec's list but is the directory Adwaita and AdwaitaLegacy list in their index.theme, and it is where
+# the full-colour app and mimetype icons are; without it those rows have nothing to draw.
+CATEGORIES = ["actions", "apps", "places", "status", "mimetypes", "categories", "legacy"]
 
 # Themes to try after the one configured. hicolor is the spec's hard-coded fallback.
-FALLBACK_THEMES = ["hicolor", "Adwaita", "breeze", "Yaru", "gnome"]
+FALLBACK_THEMES = ["hicolor", "Adwaita", "AdwaitaLegacy", "breeze", "Yaru", "gnome"]
 
 # Extension -> freedesktop mimetype icon name. Kept small on purpose: the fallback covers the rest.
 MIMETYPE_ICONS = {
@@ -43,6 +51,9 @@ MIMETYPE_ICONS = {
 FOLDER_ICON = "inode-directory"
 UNKNOWN_ICON = "text-x-generic"
 
+# A size directory as the spec writes it: "32x32", or a HiDPI variant such as "128x128@2".
+SIZE_DIR = re.compile(r"^\d+x\d+(?:@2)?$")
+
 _CACHE = {}
 
 
@@ -57,6 +68,45 @@ def themes(cfg: dict | None = None) -> list:
             seen.add(name)
             out.append(name)
     return out
+
+
+def theme_dirs(theme_dir: Path, size: int) -> list:
+    """Directories inside one theme, in the order the spec prefers them.
+
+    A size directory can sit at the theme root (hicolor, Adwaita) or inside a category (breeze), and the
+    spec allows either order, so both are searched. The exact size comes first, then the nearest size
+    larger than the row's icon, then scalable, then the smaller ones: the row draws at the theme's
+    `iconSize`, so scaling a 48 px file down reads better than scaling a 16 px file up, and a scalable SVG
+    renders at the row size without being resampled.
+    """
+    cats = [c for c in CATEGORIES if (theme_dir / c).is_dir()]
+
+    sizes = set()
+    for base in [theme_dir] + [theme_dir / c for c in cats]:
+        for entry in base.iterdir():
+            if entry.is_dir() and (SIZE_DIR.match(entry.name) or entry.name == "scalable"):
+                sizes.add(entry.name)
+
+    def rank(name):
+        if name == "scalable":
+            return (2, 0, name)
+        pixels = int(name.split("x")[0])
+        if pixels == size:
+            return (0, 0, name)
+        if pixels > size:
+            return (1, pixels - size, name)
+        return (3, size - pixels, name)
+
+    ordered = sorted(sizes, key=rank)
+
+    dirs = []
+    for name in ordered:
+        base = theme_dir / name
+        dirs.append(base)                              # theme/size, and a category inside it
+        dirs.extend(base / c for c in CATEGORIES)
+        for category in cats:
+            dirs.append(theme_dir / category / name)   # theme/category/size
+    return [d for d in dirs if d.is_dir()]
 
 
 def resolve(name: str, size: int = 32, cfg: dict | None = None) -> str | None:
@@ -75,19 +125,14 @@ def resolve(name: str, size: int = 32, cfg: dict | None = None) -> str | None:
     if path.is_absolute() and path.is_file():
         found = str(path)
     else:
-        for theme in themes(cfg):
-            for category in CATEGORIES:
-                base = None
-                for root in ICON_ROOTS:
-                    candidate = root / theme / category
-                    if candidate.is_dir():
-                        base = candidate
-                        break
-                if base is None:
+        for theme_name in themes(cfg):
+            for root in ICON_ROOTS:
+                base = root / theme_name
+                if not base.is_dir():
                     continue
-                for ext in (f"{size}x{size}", "scalable", "48x48", "32x32", "24x24", "16x16"):
+                for directory in theme_dirs(base, int(size)):
                     for suffix in (".png", ".svg"):
-                        file = base / ext / f"{name}{suffix}"
+                        file = directory / f"{name}{suffix}"
                         if file.is_file():
                             found = str(file)
                             break

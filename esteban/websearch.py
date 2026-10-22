@@ -36,8 +36,10 @@ def results(con: sqlite3.Connection, query: str, cfg: dict):
         for (url,) in con.execute(
                 "SELECT item FROM history WHERE flatItem LIKE ? ORDER BY ts DESC LIMIT 5",
                 (fuzzy_like(query),)):
-            out.append({"title": url, "subtitle": "Previously opened URL",
-                        "action": ("openurl", url)})
+            # The row contract the results box renders (title, subtitle, type, arg, action): a builder that
+            # does not go through `ui.row()` still has to carry the type, which is what decides the hint.
+            out.append({"title": url, "subtitle": "Previously opened URL", "type": "websearch",
+                        "keyword": key, "action": ("openurl", url)})
     return out
 
 

@@ -40,6 +40,7 @@ def populate(con: sqlite3.Connection, cfg: dict) -> int:
     exclude = set(fs.get("exclude_dirs", []))
     max_files = int(fs.get("max_files", 50000))
     include_folders = fs.get("includeFolders", True)
+    known = {row[0] for row in con.execute("SELECT path FROM files").fetchall()}
     count = 0
     for root in roots:
         if not root.is_dir():
@@ -55,13 +56,14 @@ def populate(con: sqlite3.Connection, cfg: dict) -> int:
             if not (p.is_file() or (is_folder and include_folders)):
                 continue
             n = p.name
-            if con.execute("SELECT 1 FROM files WHERE path = ?", (str(p),)).fetchone():
+            if str(p) in known:
                 continue
             con.execute(
                 "INSERT OR IGNORE INTO files (path, fileName, name, nameSearch, nameSplit, nameChars, lastUsed, keywords, altnames, filetype) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (str(p), n, n, apps_mod.normalize(n), apps_mod.initials(n), apps_mod.chars(n), 0, "", "",
                  FILETYPE_FOLDER if is_folder else FILETYPE_FILE))
+            known.add(str(p))
             count += 1
     prune(con, roots)
     con.commit()
@@ -81,14 +83,16 @@ def prune(con: sqlite3.Connection, roots) -> int:
 
 
 def ensure_index(con: sqlite3.Connection, cfg: dict) -> int:
-    """Populate the index once so the results box has something to answer with.
+    """Make sure the results box has something to answer with.
 
-    The GUI used to search an empty table: only `esteban index` and the TUI filled it. This runs the
-    first scan only when the table is empty, and afterwards only prunes, so opening the box stays fast.
+    The GUI used to search an empty table: only `esteban index` and the TUI filled it. The scan is
+    incremental — rows already in the index are left alone — so a launch costs one directory walk and
+    picks up files that appeared since the last one.
+
+    Counting the table instead would have kept this from ever running on a live machine: `apps.populate`
+    writes its rows into the same `files` table, and one application row inside the scope made the index
+    look complete, so the box answered for applications and never for files.
     """
-    rows = con.execute("SELECT count(*) FROM files WHERE filetype IN (0, 2)").fetchone()[0]
-    if rows:
-        return prune(con, scan_roots(cfg))
     return populate(con, cfg)
 
 

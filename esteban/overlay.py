@@ -172,14 +172,15 @@ def run(cfg: dict | None = None, con=None, bind_hotkey: bool = False) -> bool:
     def index_files():
         """The results box cannot answer for files until the index has rows.
 
-        `ensure_index` scans once, then only prunes, and it runs as an idle callback so the window shows
-        before the first scan. The results are rebuilt afterwards, because the box that opened over an
-        empty table showed nothing.
+        `ensure_index` is incremental, so a launch costs one walk of the scope and picks up what appeared
+        since the last one, and it runs as an idle callback so the window shows before the scan. The
+        results are rebuilt afterwards whatever the scan found, because the box that opened over an empty
+        table showed nothing.
         """
         try:
-            if filecache.ensure_index(con, cfg):
-                launcher.rebuild()
-                launcher.area.queue_draw()
+            filecache.ensure_index(con, cfg)
+            launcher.rebuild()
+            launcher.area.queue_draw()
         except Exception as exc:
             warn(f"file index failed ({exc})")
         return False
@@ -212,7 +213,24 @@ def color(value: str, alpha: float = 1.0):
 
 
 def font_description(spec: dict):
-    return Pango.FontDescription.from_string(f"{spec.get('font') or 'Sans'} {spec['size']}")
+    """The font for a row or the field.
+
+    Theme sizes are pixels in the theme JSON, and the row-height formula uses them as pixels. Pango's
+    `size` is points, which renders 1.33x larger at 96 dpi, so the text block came out taller than the
+    row measured by `calculateRowHeight` 0x96a80. The size is therefore applied as an absolute size.
+    """
+    desc = Pango.FontDescription.from_string(spec.get("font") or "Sans")
+    desc.set_absolute_size(int(spec["size"]) * Pango.SCALE)
+    return desc
+
+
+def pango_units(pixels: int) -> int:
+    """`pango_layout_set_width` takes Pango units, not pixels.
+
+    Passing the pixel width set the wrap width to half a pixel, so every title and subtitle ellipsized
+    to a single character — the rows read as icon plus "Enter" with no text. Widths are converted here.
+    """
+    return max(int(pixels), 1) * Pango.SCALE
 
 
 def one_line(text: str) -> str:
@@ -226,18 +244,24 @@ def make_layout(cr, spec: dict):
 
 
 def rounded_rect(cr, x, y, w, h, radius):
+    """The rounded rectangle CoreGraphics draws, walked in order.
+
+    Starting the path at the first arc means cairo opens the subpath at the arc's start point and then
+    joins the corner centres with straight lines, which folds the path over itself and reads as diagonal
+    wedges across the panel and the selection. The path is walked corner to corner instead, and the radius
+    is clamped so a rect narrower than the radius cannot fold.
+    """
     r = max(int(radius), 0)
     if r == 0:
         cr.rectangle(x, y, w, h)
         return
+    r = min(r, w // 2, h // 2)
     cr.new_path()
-    cr.arc(x + r, y + r, r, 0, PI / 2)
-    cr.line_to(x + w - r, y + r)
-    cr.arc(x + w - r, y + r, r, PI / 2, PI)
-    cr.line_to(x + w - r, y + h - r)
-    cr.arc(x + w - r, y + h - r, r, PI, 3 * PI / 2)
-    cr.line_to(x + r, y + h - r)
-    cr.arc(x + r, y + h - r, r, 3 * PI / 2, 2 * PI)
+    cr.move_to(x + r, y)
+    cr.arc(x + w - r, y + r, r, -PI / 2, 0)
+    cr.arc(x + w - r, y + h - r, r, 0, PI / 2)
+    cr.arc(x + r, y + h - r, r, PI / 2, PI)
+    cr.arc(x + r, y + r, r, PI, 3 * PI / 2)
     cr.close_path()
 
 
@@ -260,6 +284,7 @@ class Launcher:
         self.mod_name = "Ctrl" if cfg.get("advanced", {}).get("shortcutmod", 1) == 1 else "Super"
         self.mod_mask = Gdk.ModifierType.CONTROL_MASK if self.mod_name == "Ctrl" else Gdk.ModifierType.MOD4_MASK
         self.pixbuf_cache = {}
+        self.rgba = False                       # set by build(), draw_window uses it for the corners
         self.server = None
 
         window = self.theme["window"]
@@ -307,6 +332,7 @@ class Launcher:
 
     def build(self) -> None:
         visual = self.rgba_visual()
+        self.rgba = bool(visual)
         if visual:
             self.window.set_visual(visual)          # RGBA, so the rounded corners are transparent
         elif self.alpha < 1.0:
@@ -390,13 +416,15 @@ class Launcher:
         w, h = widget.get_allocated_width(), widget.get_allocated_height()
         r, g, b, _ = theme.parse_color(t["color"])
         cr.set_source_rgba(r, g, b, self.alpha)
-        if self.alpha >= 1.0:
+        if self.alpha >= 1.0 and not self.rgba:
             # An opaque panel must not depend on the compositor honouring surface alpha: the area
             # outside the rounded rectangle would be cleared and read as black, which is the black
             # square around the panel people complain about. Fill the whole window instead.
             cr.rectangle(0, 0, w, h)
             cr.fill()
         else:
+            # With an RGBA visual the corner pixels really are transparent, so the panel keeps the
+            # roundness the theme JSON measures (32) instead of reading as a sharp rectangle.
             rounded_rect(cr, 0, 0, w, h, t["roundness"])
             cr.fill()
         if t.get("borderPadding"):
@@ -470,14 +498,16 @@ class Launcher:
 
             title = make_layout(cr, t["text"])
             title.set_text(one_line(item["title"]), -1)
-            title.set_width(text_w)
+            title.set_width(pango_units(text_w))
             title.set_ellipsize(Pango.EllipsizeMode.END)
             sub = make_layout(cr, t["subtext"])
             sub.set_text(one_line(item["subtitle"]), -1)
-            sub.set_width(text_w)
+            sub.set_width(pango_units(text_w))
             sub.set_ellipsize(Pango.EllipsizeMode.END)
             title_h, sub_h = title.get_pixel_size()[1], sub.get_pixel_size()[1]
-            top = y + max(t["paddingVertical"], (row_h - (title_h + gap + sub_h)) // 2)
+            # The block is centred in the row with the glyph heights, not the nominal ones, so a row whose
+            # text is taller than `textSize + textSpacing + subtextSize` still fits inside `rowHeight`.
+            top = y + max(0, (row_h - (title_h + gap + sub_h)) // 2)
 
             cr.set_source_rgba(*color(t["text"]["colorSelected"] if selected else t["text"]["color"]))
             cr.move_to(text_x, top)

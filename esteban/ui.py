@@ -57,7 +57,8 @@ def build_results(query: str, con, cfg: dict, workflows_map: dict):
             value = evaluate(placeholders.process(query, "", con))
             if value is not None:
                 results.append(row(format_result(value), "Copy to Clipboard (Ctrl+C)", "calculator",
-                                   format_result(value), ("copy", format_result(value))))
+                                   format_result(value), ("copy", format_result(value)),
+                                   icons.resolve("accessories-calculator", size, cfg)))
         except Exception:
             value = None
 
@@ -91,7 +92,13 @@ def build_results(query: str, con, cfg: dict, workflows_map: dict):
 
     # 6. web search fallback (features.defaultresults.fallbacks)
     if show("web") and dr.get("fallbacks", {}).get("enabled"):
-        results.extend(websearch.results(con, query, cfg))
+        rows = websearch.results(con, query, cfg)
+        # The rows the box draws need an icon column; `websearch.py` builds rows for the contract, which
+        # has no icon, so the category icon is attached here rather than in the module that has no theme.
+        web_icon = icons.resolve("applications-internet", size, cfg)
+        for item in rows:
+            item["icon"] = web_icon
+        results.extend(rows)
     return results
 
 
