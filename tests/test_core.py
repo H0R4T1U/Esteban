@@ -872,6 +872,7 @@ def test_toggle_opens_on_the_main_page():
     launcher.con, launcher.cfg, launcher.results, launcher.sel, launcher.offset = con, cfg, [], 0, 0
     launcher.entry, launcher.area, launcher.policy = Entry(), Area(), "toplevel"
     launcher.theme, launcher.max_visible = theme.load_theme({}), 10     # update_height sizes the panel from these
+    launcher.panel_width = 600
     launcher.show = lambda: None                        # no display in the test
     launcher.mode, launcher.query, launcher.entry.text = "clipboard", "old", "old"
 
@@ -1036,12 +1037,13 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
     launcher.theme, launcher.max_visible, launcher.results = t, 10, [{"type": "app"}] * 25
     launcher.query, launcher.mode, launcher.options, launcher.mod_name = "", "search", {}, "Ctrl"
     launcher.sel, launcher.offset, launcher.area = 0, 0, Area()
+    launcher.panel_width = t["window"]["width"] - 2 * t["window"]["paddingHorizontal"]
     launcher.update_height()
-    assert launcher.area.request == (-1, row_h * 10)              # capped by maxVisibleRows
+    assert launcher.area.request == (launcher.panel_width, row_h * 10)   # capped by maxVisibleRows
 
     launcher.results = []
     launcher.update_height()
-    assert launcher.area.request == (-1, 0)                       # nothing typed: the box is the search field
+    assert launcher.area.request == (launcher.panel_width, 0)            # nothing typed: the box is the field
 
     old_layout, old_show = overlay.make_layout, overlay.PangoCairo.show_layout
     overlay.make_layout = lambda cr, spec: Layout()
@@ -1049,7 +1051,10 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
     try:
         launcher.draw_rows(Widget(), cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, row_h)))
         assert drawn == ["Ctrl+C"]                                # the hint probe, no placeholder
+
         launcher.query = "xyz"
+        launcher.update_height()
+        assert launcher.area.request == (launcher.panel_width, row_h)    # room for the "No results" line
         drawn.clear()
         launcher.draw_rows(Widget(), cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, row_h)))
         assert drawn == ["Ctrl+C", "No results"]

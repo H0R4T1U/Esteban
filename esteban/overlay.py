@@ -328,8 +328,10 @@ class Launcher:
 
         self.area = Gtk.DrawingArea()
         self.area.set_app_paintable(True)         # the panel behind the rows is drawn by draw_window, not by the system theme
-        self.area.set_size_request(window["width"] - 2 * window["paddingHorizontal"],
-                                   theme.row_height(self.theme) * self.max_visible)
+        # The panel height is the rows it shows (`update_height`), so before anything has been typed the box is
+        # the search field. The content width stays requested so the rows fill the panel.
+        self.panel_width = window["width"] - 2 * window["paddingHorizontal"]
+        self.area.set_size_request(self.panel_width, 0)
 
         # `search.spacing` (8 px) is the measured gap between the field and the first row; the window
         # padding (11 x 12) is the content inset, so nothing sits flush against the panel edge.
@@ -474,9 +476,13 @@ class Launcher:
         """`visibleRows = min(numberOfRows, _maxVisibleRows)` decides how tall the panel is.
 
         The box was requested at the full `maxVisibleRows` height, so it opened as a tall empty panel before
-        anything had been typed. With no rows there is nothing to draw, and the window is the search field.
+        anything had been typed. With nothing typed there is nothing to draw and the window is the search field;
+        a typed query that matches nothing still has a row of height for the "No results" line.
         """
-        self.area.set_size_request(-1, theme.row_height(self.theme) * min(len(self.results), self.max_visible))
+        rows = min(len(self.results), self.max_visible)
+        if not rows and self.query:
+            rows = 1
+        self.area.set_size_request(self.panel_width, theme.row_height(self.theme) * rows)
 
     def set_query(self, query: str) -> None:
         self.query = query
