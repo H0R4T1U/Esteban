@@ -390,27 +390,35 @@ def test_missing_helper_does_not_raise():
 def test_spawn_command_names_a_file():
     """The entry is execed by the compositor, so the launcher has to be a file, installed or not."""
     import os
+    import tempfile
 
     from esteban import config, hotkey
 
+    bin_dir = Path(tempfile.mkdtemp()) / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    interpreter = bin_dir / "python3"
+    interpreter.write_text("")
+
     old_which, old_bin = hotkey.shutil.which, os.environ.get("ESTEBAN_BIN")
+    old_executable = hotkey.sys.executable
     hotkey.shutil.which = lambda name: None
+    hotkey.sys.executable = str(interpreter)
     os.environ.pop("ESTEBAN_BIN", None)
     try:
         command = hotkey.spawn_command()
         assert Path(command).is_absolute()                                    # not a bare name
         assert Path(command).is_file() and os.access(command, os.X_OK)        # bin/esteban, no install needed
         assert hotkey.cosmic_entry(config.DEFAULTS, command).endswith(f'Spawn("{command}", "toggle")')
+
+        (bin_dir / "esteban").write_text("")                                  # entry point in a venv that is not on PATH
+        assert hotkey.spawn_command() == str(bin_dir / "esteban")
+
+        hotkey.shutil.which = lambda name: "/home/you/.local/bin/esteban"
+        assert hotkey.spawn_command() == "/home/you/.local/bin/esteban"       # PATH wins over the sibling
     finally:
-        hotkey.shutil.which = old_which
+        hotkey.shutil.which, hotkey.sys.executable = old_which, old_executable
         if old_bin:
             os.environ["ESTEBAN_BIN"] = old_bin
-
-    hotkey.shutil.which = lambda name: "/home/you/.local/bin/esteban"
-    try:
-        assert hotkey.spawn_command() == "/home/you/.local/bin/esteban"   # an installed launcher wins
-    finally:
-        hotkey.shutil.which = old_which
 
 
 if __name__ == "__main__":

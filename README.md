@@ -125,7 +125,9 @@ name a file — a desktop shortcut, a systemd user service, an autostart entry �
 `esteban`, because it is execed with the PATH the compositor or systemd was started with, not the login
 shell's. `bin/esteban` is the alternative for an uninstalled checkout: it resolves its own location, puts
 the project root on `sys.path`, and works from any directory, so an absolute path to it is a valid target.
-`esteban keybind` uses it when nothing is on PATH and says which path it wrote.
+`esteban keybind` uses it when nothing is on PATH, and says which path it used. It also takes the entry
+point script sitting next to the interpreter that runs esteban — that is the usual venv case, where the
+file exists but PATH does not contain the venv's bin.
 
 ### If `esteban` falls back to the TUI
 

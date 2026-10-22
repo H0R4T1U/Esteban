@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -58,6 +59,21 @@ def is_wayland() -> bool:
     return compositor.detect()["server"] == "wayland"
 
 
+def installed_launcher() -> str | None:
+    """The launcher as a file, or None when nothing can be named.
+
+    Two places, because they are the two that people actually have: on PATH, and next to the
+    interpreter running esteban. The second is the venv case — `pip install .` inside a venv puts the
+    entry point script in the venv's bin, which is not on the PATH the compositor was started with, so
+    a bare `esteban` is not a target even though the file exists.
+    """
+    found = shutil.which("esteban")
+    if found:
+        return found
+    sibling = Path(sys.executable).parent / "esteban"
+    return str(sibling) if sibling.is_file() else None
+
+
 def spawn_command() -> str:
     """Absolute path of the launcher.
 
@@ -71,11 +87,11 @@ def spawn_command() -> str:
     from any directory. Installing is still the durable answer, because a keybinding that points at a
     checkout breaks the moment the checkout moves.
     """
-    found = shutil.which("esteban")
-    if found:
-        return found
     if os.environ.get("ESTEBAN_BIN"):
         return os.environ["ESTEBAN_BIN"]
+    found = installed_launcher()
+    if found:
+        return found
     if CHECKOUT_LAUNCHER.exists():
         if not os.access(CHECKOUT_LAUNCHER, os.X_OK):
             warn(f"{CHECKOUT_LAUNCHER} is not executable — run `chmod +x bin/esteban`")
