@@ -16,7 +16,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import clipboard, compositor, ipc, overlay, store
+from . import clipboard, compositor, hotkey, ipc, overlay, store, theme
 from .config import DATA_DIR, load_config
 
 
@@ -58,6 +58,19 @@ def checks(cfg: dict) -> list[tuple[str, str]]:
                                       "(clients cannot grab global keys on Wayland)"))
     else:
         rows.append(("global hotkey", "pynput" if _has("pynput") else "no — pip install pynput (X11 only)"))
+
+    if session["compositor"] == "COSMIC":
+        entry = hotkey.cosmic_entry(cfg)
+        if hotkey.COSMIC_SHORTCUTS_FILE.exists():
+            state = "entry present" if hotkey.entry_present(hotkey.COSMIC_SHORTCUTS_FILE.read_text(), entry) \
+                else "no entry for this combo"
+            rows.append(("keybind file", f"{hotkey.COSMIC_SHORTCUTS_FILE} ({state})"))
+        else:
+            rows.append(("keybind file", f"{hotkey.COSMIC_SHORTCUTS_FILE} (not created yet)"))
+
+    t = theme.load_theme(cfg)
+    rows.append(("panel alpha", f"{theme.window_alpha(t, cfg):.3f} (theme {t['window']['color']}; GTK has "
+                                "no blur, so a compositor that cannot blur shows it as a flat film)"))
 
     # clipboard backend
     rows.append(("clipboard backend", clipboard._backend()))

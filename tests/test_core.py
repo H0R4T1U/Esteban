@@ -285,7 +285,7 @@ def test_doctor():
            "features": {"terminal": {"command": "x-terminal-emulator"}}}
     text = doctor.report(cfg)
     for key in ("compositor", "surface policy", "overlay (PyGObject)", "cairo", "clipboard backend",
-                "display server", "instance socket", "global hotkey"):
+                "display server", "instance socket", "global hotkey", "panel alpha"):
         assert key in text
 
 
@@ -327,7 +327,7 @@ def test_transparency_override():
 
 
 def test_keybind_entry_and_writer():
-    """COSMIC stores the shortcut as a list where command and arguments are separate strings."""
+    """COSMIC stores the shortcut as a RON map where command and arguments are separate strings."""
     import tempfile
 
     from pathlib import Path
@@ -336,13 +336,16 @@ def test_keybind_entry_and_writer():
 
     cfg = {key: (value.copy() if isinstance(value, dict) else value) for key, value in config.DEFAULTS.items()}
     entry = hotkey.cosmic_entry(cfg, "/usr/local/bin/esteban")
-    assert entry == '(modifiers: [Alt], key: "Space"): Spawn("/usr/local/bin/esteban", "toggle")'
+    assert entry == '(modifiers: [Alt], key: "space"): Spawn("/usr/local/bin/esteban", "toggle")'
+    assert hotkey.key_name("space") == "space"                          # lowercase keysym names, as the file stores them
+    assert hotkey.key_name("dollar") == "dollar"
+    assert hotkey.key_name("f12") == "F12"
 
     d = Path(tempfile.mkdtemp())
     v1 = d / "v1"
     v1.mkdir()
     shortcuts = v1 / "custom"
-    shortcuts.write_text('[\n    (modifiers: [Super], key: "F12"): Spawn("/usr/bin/notify-send", "hi"),\n]')
+    shortcuts.write_text('{\n    (modifiers: [Alt, Shift], key: "4"): Spawn("/usr/bin/notify-send", "hi"),\n}')
 
     old_file, old_data, old_command = hotkey.COSMIC_SHORTCUTS_FILE, hotkey.DATA_DIR, hotkey.spawn_command
     hotkey.COSMIC_SHORTCUTS_FILE, hotkey.DATA_DIR = shortcuts, d / "esteban"
@@ -350,16 +353,20 @@ def test_keybind_entry_and_writer():
     try:
         assert hotkey.write_keybind(cfg) == 0
         text = shortcuts.read_text()
-        assert entry in text
+        assert entry + "," in text
         assert "notify-send" in text                                   # existing entries kept
         assert hotkey.write_keybind(cfg) == 0                          # running it twice changes nothing
         assert shortcuts.read_text() == text
         assert list(v1.iterdir()) == [shortcuts]                       # nothing left beside the file
         assert (d / "esteban" / "custom-shortcuts.bak").exists()       # the copy lives outside /v1/
 
-        shortcuts.write_text("not a list")
+        shortcuts.write_text("{}")
+        assert hotkey.write_keybind(cfg) == 0
+        assert shortcuts.read_text().strip() == "{\n    " + entry + ",\n}"      # an empty map still parses
+
+        shortcuts.write_text("not a map")
         assert hotkey.write_keybind(cfg) == 1
-        assert shortcuts.read_text() == "not a list"                   # guessed formats are not written
+        assert shortcuts.read_text() == "not a map"                    # guessed formats are not written
     finally:
         hotkey.COSMIC_SHORTCUTS_FILE, hotkey.DATA_DIR, hotkey.spawn_command = old_file, old_data, old_command
 

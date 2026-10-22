@@ -223,6 +223,16 @@ rows changes; the row, selection, text and border colours stay as measured.
 { "appearance": { "transparency": "off" } }
 ```
 
+Two other things that read as "bad" and are worth checking on a COSMIC session:
+
+- **No RGBA visual.** Without one the compositor paints the alpha as an opaque black rectangle, so the
+  panel looks like a black box rather than a translucent one. `overlay.py` asks for
+  `Gdk.Screen.get_rgba_visual()` and, when the session has none, draws the panel opaque and says so
+  instead of drawing black. A Wayland surface has to carry alpha for any translucency at all.
+- **The compositor's decoration.** An undecorated GTK3 window on COSMIC still gets the compositor's own
+  rounded corners, shadow and active hint, which can double up with the 32 px radius drawn here. A client
+  cannot change that; an opaque panel is what removes the visible mismatch.
+
 ### Global hotkey
 
 Wayland compositors own global keys, so bind the key in the compositor and point it at
@@ -232,25 +242,37 @@ with pynput.
 
 **COSMIC**: COSMIC Settings → Keyboard → Custom Shortcuts, add a shortcut whose command is
 `esteban toggle`. The same list is plain text at
-`~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom`, and in that file the command and
-its arguments are two separate strings:
+`~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom`, and that file is a RON **map**, so
+each entry is a `key: value` pair:
 
 ```text
-(
-    modifiers: [
-        Alt,
-    ],
-    key: "Space",
-): Spawn("/home/you/.local/bin/esteban", "toggle"),
+{
+    (
+        modifiers: [
+            Alt,
+        ],
+        key: "space",
+    ): Spawn("/home/you/.local/bin/esteban", "toggle"),
+}
 ```
 
-An entry written as `Spawn("esteban toggle")` tries to exec a program named `esteban toggle`, which is
-why a hand-written shortcut can look like the key does nothing. `esteban keybind` prints the entry for
-the configured combo using the resolved launcher path; `esteban keybind --write` appends it to that
-file. It only edits the file when it is already the list the settings UI writes, and the previous
-contents are kept in `~/.esteban/` rather than beside the file — every file under `/v1/` is read as a
+Three things in that file are easy to get wrong, and each one makes the key look dead:
+
+- the command and its arguments are **two separate strings** — `Spawn("esteban toggle")` tries to exec a
+  program named `esteban toggle`
+- keys are stored as lowercase keysym names (`"space"`, `"4"`, `"dollar"`) with function keys as written
+  (`"F12"`), so a capitalised `"Space"` never matches
+- the program has to be named as a file, because the entry is execed with the compositor's PATH, not a
+  shell's
+
+`esteban keybind` prints the entry for the configured combo with the resolved launcher path, says
+whether that entry is already in the file, and whether an instance is answering on the socket.
+`esteban keybind --write` appends it — only when the file is already the map the settings UI writes,
+keeping existing entries and leaving nothing beside the file: every file under `/v1/` is read as a
 config key, so a backup there breaks the whole reload. After writing, cosmic-settings-daemon has to
-read the file again (relogin, or restart the settings daemon).
+read the file again (relogin, or `systemctl --user restart cosmic-settings-daemon`). If a hand-written
+entry is not picked up on your build, add the same shortcut through COSMIC Settings — that path is the
+reliable one (pop-os/cosmic-epoch#2481).
 
 `Super` already opens the COSMIC launcher, so pick a free key. `esteban doctor` prints the
 instructions for the session it is run in.
@@ -317,10 +339,11 @@ moveToTopOnUse, persistence), the workflow `info.plist` / script-filter item con
 geometry formulas, the action numbers and the visible-row mapping for number keys, the surface
 policy per compositor (COSMIC and GNOME get a plain window, wlroots-derived compositors get
 layer-shell, X11 a normal window, no display the TUI), the reason the results box reports when it
-cannot be drawn, the typelib lookup `doctor` prints, the panel alpha override, the COSMIC keybind
-entry and its writer (RON list only, existing entries kept, nothing left beside the settings file),
-the toggle IPC round-trip, the row contract shared by the TUI and the overlay, the environment
-report, and the fact that a missing helper prints one line instead of raising.
+cannot be drawn, the typelib lookup `doctor` prints, the panel alpha override, the COSMIC keybind entry
+(lowercase keysym names, two-argument `Spawn`) and its writer (RON map only, existing entries kept,
+nothing left beside the settings file), the toggle IPC round-trip, the row contract shared by the TUI
+and the overlay, the environment report, and the fact that a missing helper prints one line instead of
+raising.
 
 ## Notes and limits
 

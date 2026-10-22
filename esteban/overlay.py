@@ -236,6 +236,7 @@ class Launcher:
         self.session = session
         self.policy = session["policy"]
         self.theme = theme.load_theme(cfg)
+        self.alpha = theme.window_alpha(self.theme, cfg)
 
         self.mode = "search"
         self.query = ""
@@ -284,6 +285,11 @@ class Launcher:
         visual = self.rgba_visual()
         if visual:
             self.window.set_visual(visual)          # RGBA, so the rounded corners are transparent
+        elif self.alpha < 1.0:
+            # Without an RGBA visual the panel cannot be translucent: the alpha is composited as an
+            # opaque black rectangle, which is the other thing people read as "transparency looks bad".
+            self.alpha = 1.0
+            warn("this session has no RGBA visual, so the panel is drawn opaque")
         self.apply_css()
         if self.policy == compositor.LAYER_SHELL and HAVE_SHELL and GtkLayerShell.is_supported():
             self.use_layer_shell()
@@ -356,7 +362,7 @@ class Launcher:
         t = self.theme["window"]
         w, h = widget.get_allocated_width(), widget.get_allocated_height()
         r, g, b, _ = theme.parse_color(t["color"])
-        cr.set_source_rgba(r, g, b, theme.window_alpha(self.theme, self.cfg))
+        cr.set_source_rgba(r, g, b, self.alpha)
         rounded_rect(cr, 0, 0, w, h, t["roundness"])
         cr.fill()
         if t.get("borderPadding"):

@@ -11,13 +11,14 @@ stored under `local.hotkey.default` 0x203b5c. Linux has no client-side equivalen
 
 Default is Alt+Space, mirroring Alfred's Option+Space.
 
-COSMIC: COSMIC Settings > Keyboard > Custom Shortcuts runs a command, and the same list is stored
-as plain text at ~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom. In that file the
+COSMIC: COSMIC Settings > Keyboard > Custom Shortcuts runs a command, and the same list is stored as
+a RON map at ~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom. In that file the
 command and its arguments are two separate strings — `Spawn("/home/you/.local/bin/esteban",
 "toggle")` — so an entry written as `Spawn("esteban toggle")` execs a program named
-`esteban toggle` and looks like the key does nothing. `esteban keybind` prints the entry, and
-`esteban keybind --write` appends it. Super already opens the COSMIC launcher, so pick a free key
-(Alt+Space, Super+F12, ...).
+`esteban toggle` and looks like the key does nothing. Keys are stored as lowercase keysym names
+(`"4"`, `"dollar"`, `"space"`) with function keys as written (`"F12"`), so a capitalised `"Space"`
+entry never matches. `esteban keybind` prints the entry, `esteban keybind --write` appends it. Super
+already opens the COSMIC launcher, so pick a free key (Alt+Space, Super+F12, ...).
 """
 from __future__ import annotations
 
@@ -73,19 +74,29 @@ def spawn_command() -> str:
     return "esteban"
 
 
+def key_name(key: str) -> str:
+    """The key name as cosmic-config writes it: lowercase keysym names, function keys as written.
+
+    In the settings file the keys appear as `"4"`, `"dollar"`, `"F12"`. An entry written with a
+    capitalised name (`"Space"`) does not match what the compositor compares against, so the shortcut
+    looks like it does nothing.
+    """
+    if key.upper().startswith("F") and key[1:].isdigit():
+        return key.upper()
+    return key.lower()
+
+
 def cosmic_entry(cfg: dict, command: str | None = None) -> str:
     """One entry in the format cosmic-settings writes to the custom-shortcuts file.
 
-    Command and arguments are two separate strings in that RON list, and the modifiers are the Rust
-    key names (`Alt`, `Ctrl`, `Shift`, `Super`), which is why a hand-written entry using a single
-    string with a space inside it does nothing.
+    The file is a RON map, so an entry is a `key: value` pair, and the command and its arguments are
+    two separate strings. Modifier names are the Rust enum names (`Alt`, `Ctrl`, `Shift`, `Super`).
     """
     combo = cfg["hotkey"]["default"]
     mods, key = parse_combo(f"{combo['mod']}+{combo['key']}")
     command = command or spawn_command()
     modifiers = ", ".join(RUST_MOD_NAMES[m] for m in sorted(mods)) or "Super"
-    key_name = key if len(key) == 1 else key.title()
-    return f'(modifiers: [{modifiers}], key: "{key_name}"): Spawn("{command}", "toggle")'
+    return f'(modifiers: [{modifiers}], key: "{key_name(key)}"): Spawn("{command}", "toggle")'
 
 
 def instructions(combo: str) -> str:
@@ -120,7 +131,7 @@ def instructions(combo: str) -> str:
     return "\n".join(lines)
 
 
-def _present(text: str, entry: str) -> bool:
+def entry_present(text: str, entry: str) -> bool:
     """Same entry, whatever spacing cosmic-settings wrote it with."""
     return " ".join(entry.split()) in " ".join(text.split())
 
@@ -129,27 +140,32 @@ def write_keybind(cfg: dict) -> int:
     """Append the entry to the COSMIC custom-shortcuts file.
 
     Two rules come from how cosmic-settings-daemon reads that directory: every file under `/v1/` is
-    treated as a config key, so a backup left beside the entry file becomes a bogus key and breaks
-    the whole reload — the copy is kept in `~/.esteban/`. And the file is only edited when it is
-    already the RON list the settings UI writes; nothing is guessed, because a malformed list is
-    dropped on reload.
+    treated as a config key, so a backup left beside the entry file becomes a bogus key and breaks the
+    whole reload — the copy is kept in `~/.esteban/`. And the file is only edited when it is already a
+    RON map or list, never guessed, because a file the parser rejects is dropped on reload and no
+    shortcut works at all.
+
+    The settings UI is still the reliable path: hand-written entries have been reported not to take
+    effect on some builds (pop-os/cosmic-epoch#2481), while the same key added through the UI worked.
     """
     path = COSMIC_SHORTCUTS_FILE
     entry = cosmic_entry(cfg)
 
     if not path.exists():
-        warn(f"{path} does not exist yet. Open COSMIC Settings > Keyboard > Custom Shortcuts once "
-             "so the settings daemon creates the file, then run `esteban keybind --write` again.")
+        warn(f"{path} does not exist yet. Add the shortcut once in COSMIC Settings > Keyboard > "
+             "Custom Shortcuts so the settings daemon creates the file, then run "
+             "`esteban keybind --write` again.")
         return 1
 
     text = path.read_text()
-    if _present(text, entry):
+    if entry_present(text, entry):
         print(f"already in {path}: {entry}")
         return 0
 
     body = text.strip()
-    if not (body.startswith("[") and body.endswith("]")):
-        warn(f"{path} is not the list cosmic-settings writes, so nothing was changed. Add the "
+    opener, closer = ("{", "}") if body.startswith("{") else ("[", "]")
+    if not (body.startswith(opener) and body.endswith(closer)):
+        warn(f"{path} is not the RON map cosmic-settings writes, so nothing was changed. Add the "
              f"shortcut in COSMIC Settings instead: command {spawn_command()}, argument toggle.")
         return 1
 
@@ -161,18 +177,17 @@ def write_keybind(cfg: dict) -> int:
         warn(f"could not keep a copy in {backup} ({exc}); writing anyway")
 
     head = body[:-1].rstrip().rstrip(",")
-    updated = f"{head}\n    {entry}\n" if head not in ("", "[") else f"[\n    {entry}\n"
     try:
-        path.write_text(updated + "]")
+        path.write_text(f"{head}\n    {entry},\n{closer}\n")
     except OSError as exc:
         warn(f"could not write {path} ({exc})")
         return 1
 
     print(f"added to {path}:")
-    print(f"    {entry}")
-    print("cosmic-settings-daemon has to read the file again: log out and back in, or restart the "
-          "settings daemon. The key only works while an instance is listening, so start "
-          "`esteban daemon` at session start.")
+    print(f"    {entry},")
+    print("cosmic-settings-daemon has to read the file again: log out and back in, or restart it "
+          "(`systemctl --user restart cosmic-settings-daemon`). If the key still does nothing, add "
+          "the same shortcut in COSMIC Settings — a hand-written entry is not always picked up.")
     print(f"previous contents kept at {backup}")
     return 0
 
@@ -181,10 +196,23 @@ def keybind(cfg: dict, write: bool = False) -> int:
     """Print the keybinding for this session, and write it when asked."""
     combo = cfg["hotkey"]["default"]
     spec = f"{combo['mod']}+{combo['key']}"
+    command = spawn_command()
+    entry = cosmic_entry(cfg, command)
+
     print(instructions(spec))
-    print(f"\nkey: {spec} -> esteban toggle")
-    print(f"launcher: {spawn_command()}")
+    print()
+    print(f"key:      {spec} -> esteban toggle")
+    print(f"launcher: {command}")
+    print(f"entry:    {entry},")
+    if COSMIC_SHORTCUTS_FILE.exists():
+        state = "entry present" if entry_present(COSMIC_SHORTCUTS_FILE.read_text(), entry) else "no entry for this combo"
+        print(f"file:     {COSMIC_SHORTCUTS_FILE} ({state})")
+    else:
+        print(f"file:     {COSMIC_SHORTCUTS_FILE} (not created yet)")
     print(f"socket:   {ipc.socket_path()} ({'instance listening' if ipc.send('ping') is not None else 'nothing listening'})")
+    print("The key does nothing unless an instance is listening: run `esteban daemon` in a terminal "
+          "and press the key — it prints `toggle -> running instance`. If nothing prints, the "
+          "compositor is not grabbing the key (`wev` shows whether the chord reaches an app).")
 
     if not write:
         return 0
