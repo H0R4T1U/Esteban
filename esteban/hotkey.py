@@ -132,7 +132,12 @@ def run_daemon(cfg: dict, callback=None) -> int:
         if overlay.available():
             if overlay.run(cfg, bind_hotkey=True):
                 return 0
-
+        else:
+            # A user service can start before the session sets WAYLAND_DISPLAY, which is the usual
+            # reason a daemon ends up headless; say it instead of silently listening only.
+            note = overlay.fallback_note(cfg)
+            if note:
+                warn(f"daemon without a results box: {note}")
         callback = lambda: spawn_launcher(cfg)
 
     listener = bind(cfg, callback)

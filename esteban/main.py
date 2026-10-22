@@ -64,8 +64,9 @@ def main(argv=None) -> int:
 
     if cmd in ("overlay", "gui"):
         if not overlay.available():
-            warn("the overlay needs PyGObject: pip install pygobject "
-                  "(and gtk-layer-shell when the compositor policy is layer-shell)")
+            warn(f"the overlay cannot run: {overlay.unavailable_reason()}"
+                  + (" (and gtk-layer-shell when the policy is layer-shell)"
+                     if compositor.detect()["policy"] == compositor.LAYER_SHELL else ""))
             return 1
         if not overlay.run(cfg):
             return 1
@@ -77,6 +78,9 @@ def main(argv=None) -> int:
     if cmd == "ui":
         if overlay.available() and overlay.run(cfg):
             return 0
+        note = overlay.fallback_note(cfg)
+        if note:
+            warn(f"using the terminal launcher instead: {note}")
         return run_tui(cfg)
 
     if cmd in ("daemon", "hotkey"):

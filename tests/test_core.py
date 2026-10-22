@@ -258,6 +258,25 @@ def test_surface_policy():
     assert "protocol violation" in compositor.reason(compositor.TOPLEVEL, "COSMIC")
 
 
+def test_overlay_reports_why_it_cannot_draw():
+    """The TUI fallback says which part is missing instead of failing silently."""
+    from esteban import overlay
+
+    gtk, cairo, err = overlay.HAVE_GTK, overlay.HAVE_CAIRO, overlay.GI_ERROR
+    try:
+        # gi importable but the typelib is a system package that is not installed
+        overlay.HAVE_GTK, overlay.HAVE_CAIRO, overlay.GI_ERROR = False, False, "Namespace Gtk not available"
+        assert "typelib" in overlay.unavailable_reason()
+
+        # PyGObject present, pycairo absent: PangoCairo and the draw path need it
+        overlay.HAVE_GTK, overlay.HAVE_CAIRO = True, False
+        assert "pycairo" in overlay.unavailable_reason()
+    finally:
+        overlay.HAVE_GTK, overlay.HAVE_CAIRO, overlay.GI_ERROR = gtk, cairo, err
+
+    assert overlay.available() or overlay.unavailable_reason()      # a fallback always explains itself
+
+
 def test_doctor():
     """The report a crash report should come with: what the launcher can actually use."""
     from esteban import doctor
@@ -265,7 +284,7 @@ def test_doctor():
     cfg = {"appearance": {"theme": "dark", "maxVisibleRows": 10},
            "features": {"terminal": {"command": "x-terminal-emulator"}}}
     text = doctor.report(cfg)
-    for key in ("compositor", "surface policy", "overlay (PyGObject)", "clipboard backend",
+    for key in ("compositor", "surface policy", "overlay (PyGObject)", "cairo", "clipboard backend",
                 "display server", "instance socket", "global hotkey"):
         assert key in text
 

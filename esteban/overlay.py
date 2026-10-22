@@ -44,8 +44,23 @@ try:
     gi.require_version("Gtk", "3.0")
     from gi.repository import GLib, Gdk, GdkPixbuf, Gtk, Pango, PangoCairo
     HAVE_GTK = True
-except Exception:
+    GI_ERROR = ""
+except Exception as exc:
+    # Two failures that look identical from outside: PyGObject itself is missing (pip),
+    # or the system package carrying the Gtk-3.0 typelib is missing. They need different fixes,
+    # so keep the message and let `doctor` show it.
     HAVE_GTK = False
+    GI_ERROR = str(exc) or type(exc).__name__
+
+try:
+    import cairo
+    HAVE_CAIRO = True
+except ImportError:
+    try:
+        import cairocffi                                   # PyGObject also accepts cairocffi
+        HAVE_CAIRO = True
+    except ImportError:
+        HAVE_CAIRO = False
 
 try:
     gi.require_version("GtkLayerShell", "1.0")
@@ -57,7 +72,28 @@ except Exception:
 
 
 def available() -> bool:
-    return HAVE_GTK
+    return HAVE_GTK and HAVE_CAIRO
+
+
+def unavailable_reason() -> str:
+    """Why the results box cannot be drawn — printed by `doctor` and by the TUI fallback."""
+    if available():
+        return ""
+    if HAVE_GTK:
+        return "PyGObject is installed but cairo is not (pip install pycairo)"
+    if "Namespace Gtk not available" in GI_ERROR or "typelib" in GI_ERROR.lower():
+        return f"{GI_ERROR} — that typelib comes from the system GTK package, not from pip"
+    return f"PyGObject is not installed ({GI_ERROR})"
+
+
+def fallback_note(cfg: dict) -> str:
+    """One line saying why this session takes the TUI path instead of drawing the box."""
+    if not available():
+        return unavailable_reason()
+    session = compositor.detect()
+    if session["policy"] == compositor.NONE:
+        return "no display session"
+    return ""
 
 
 def mod_action(item, mod_name: str) -> dict:

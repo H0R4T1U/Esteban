@@ -112,9 +112,29 @@ Local REA working files — the `evidence/` JSON exports, the live-database copi
 pip install ".[overlay,hotkey]"             # esteban + PyGObject (overlay) + pynput (X11 hotkey)
 sudo dnf install gtk-layer-shell            # Fedora: the layer-shell typelib
 sudo apt install gtk-layer-shell            # Debian / Ubuntu / Pop!_OS: the same
+sudo pacman -S python-gobject python-cairo gobject-introspection   # Arch / CachyOS
 sudo dnf install wl-clipboard ydotool       # Wayland clipboard + simulated paste
 sudo apt install wl-clipboard ydotool       # the same on deb-based systems
+sudo pacman -S wl-clipboard ydotool         # the same on Arch
 ```
+
+### If `esteban` falls back to the TUI
+
+`esteban doctor` prints the reason it takes the terminal path; the usual ones:
+
+- **PyGObject is there but the `Gtk-3.0` typelib is not.** The typelib comes from the system GTK
+  package, not from pip: `gtk3` on deb systems, `gtk3` on Arch (CachyOS), `gtk3` on Fedora.
+  Debian/Ubuntu: `sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-pango-1.0`.
+  Arch/CachyOS: `sudo pacman -S python-gobject python-cairo gobject-introspection gtk3 pango`.
+  A `pip install pygobject` inside a venv only gives you the bindings; the typelibs must still be
+  on the system, and the venv must be the one that runs `esteban`.
+- **pycairo (or cairocffi) is missing** — `PangoCairo` and the drawing path need it. The `cairo`
+  line in `doctor` shows this separately from PyGObject.
+- **A different Python is running.** `python3 -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk"` in the same interpreter `esteban` uses (`which esteban`).
+- **No `WAYLAND_DISPLAY` in the environment of the process.** A systemd user service starts before
+  the session exports it, so the daemon comes up headless and only listens. `esteban doctor` from
+  inside the session shows `policy none`; start the daemon in the session, or export the variable
+  once per login: `systemctl --user import-environment WAYLAND_DISPLAY`.
 
 ```bash
 esteban index          # build the XDG app index and file index
@@ -226,14 +246,14 @@ Themes: `~/.esteban/themes/<name>.json` in Alfred's theme JSON schema (`alfredth
 python3 tests/test_core.py
 ```
 
-Fourteen tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
+Fifteen tests pass: fuzzy LIKE builder, calculator, placeholder formats, usage ranking (knowledge
 count, strong latching, 30-day window), clipboard behaviours (dedupe, fastAppend, limit,
 moveToTopOnUse, persistence), the workflow `info.plist` / script-filter item contract, the theme
 geometry formulas, the action numbers and the visible-row mapping for number keys, the surface
 policy per compositor (COSMIC and GNOME get a plain window, wlroots-derived compositors get
-layer-shell, X11 a normal window, no display the TUI), the toggle IPC round-trip, the row contract
-shared by the TUI and the overlay, the environment report, and the fact that a missing helper
-prints one line instead of raising.
+layer-shell, X11 a normal window, no display the TUI), the reason the results box reports when it
+cannot be drawn, the toggle IPC round-trip, the row contract shared by the TUI and the overlay, the
+environment report, and the fact that a missing helper prints one line instead of raising.
 
 ## Notes and limits
 

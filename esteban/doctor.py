@@ -28,7 +28,8 @@ def checks(cfg: dict) -> list[tuple[str, str]]:
     rows.append(("surface policy", f"{session['policy']} — {compositor.reason(session['policy'], session['compositor'])}"))
 
     # interface
-    rows.append(("overlay (PyGObject)", "yes" if overlay.HAVE_GTK else "no — pip install pygobject"))
+    rows.append(("overlay (PyGObject)", "yes" if overlay.available() else f"no — {overlay.unavailable_reason()}"))
+    rows.append(("cairo", "yes" if overlay.HAVE_CAIRO else "no — pip install pycairo"))
     shell = "yes" if overlay.HAVE_SHELL else "no — install gtk-layer-shell"
     if session["policy"] != compositor.LAYER_SHELL:
         shell += f" (not used: policy is {session['policy']})"
