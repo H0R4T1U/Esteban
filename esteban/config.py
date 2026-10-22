@@ -35,6 +35,11 @@ DEFAULTS = {
         # the panel is drawn solid with the measured colour. "theme" restores the measured alpha, and
         # a number 0-1 sets it explicitly.
         "transparency": "off",
+        # Not an Alfred key, and it is here for the same reason as `transparency`: on macOS the panel is drawn
+        # over an NSVisualEffectView blur, which reads as a card floating above the desktop. On Linux nothing
+        # blurs the wallpaper behind the panel, so a soft shadow around it is what makes the box read as raised
+        # instead of pasted onto the screen. This is the spread in pixels; 0 turns it off.
+        "shadow": 16,
     },
     "advanced": {"shortcutmod": 1, "latching": True},
     "features": {

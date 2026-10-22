@@ -217,7 +217,7 @@ Implemented in `esteban` (Python 3, stdlib-first):
 | Alfred (macOS) | Linux equivalent in esteban |
 |---|---|
 | Carbon `RegisterEventHotKey` | pynput on X11; on Wayland a compositor keybinding running `esteban toggle`, which sends the toggle over a Unix socket (`ipc.py`) |
-| AppKit window + `NSVisualEffectView` | GTK3 results box (`overlay.py`); the surface kind is chosen per session by `compositor.py`: layer-shell on wlroots-derived compositors, plain window on COSMIC and GNOME, normal window on X11, TUI as last fallback |
+| AppKit window + `NSVisualEffectView` | GTK3 results box (`overlay.py`); the surface kind is chosen per session by `compositor.py`: layer-shell on wlroots-derived compositors including COSMIC, plain window on GNOME, normal window on X11, TUI as last fallback |
 | `AlfredSelectionList::drawRect:` | Cairo/Pango renderer using the same formulas: row height, `min(roundness,4)` selection radius, scrollbar radius `min(thickness>>1,4)`, shortcut alpha fade |
 | `AlfredTheme` JSON | `theme.py` reads Alfred's theme JSON schema (`alfredtheme` root, `#RRGGBBAA` colors) |
 | Spotlight/LaunchServices | XDG `.desktop` entries (`apps.py`) |
@@ -232,5 +232,7 @@ Two rules in esteban come from the compositor side rather than from Alfred, and 
 shape of `overlay.py`: cosmic-comp reports a commit on a surface whose role has already been
 destroyed as a protocol violation and drops the client's connection, so the results box never
 destroys a surface after it has been unmapped and quitting leaves the main loop instead of
-destroying the window; and on COSMIC and GNOME the box is a plain window, because that path's
-teardown is safe there while layer-shell's is not.
+destroying the window. On COSMIC the box is a layer surface — measured on a live session, the hide/show
+cycle the toggle performs keeps the connection and the focus, and a layer surface is not drawn inside the
+compositor's own window frame, which a plain toplevel there is. On GNOME it stays a plain window, because
+Mutter has no layer-shell.

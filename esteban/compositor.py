@@ -33,10 +33,15 @@ NONE = "none"
 # Compositors where hiding and re-showing a layer surface is the normal pattern.
 LAYER_SHELL_COMPOSITORS = {
     "Hyprland", "Sway", "Wayfire", "River", "KDE Plasma (KWin)", "Cocoa (Wayland)",
+    # Measured on a live COSMIC session: cosmic-comp takes the layer surface, hands it keyboard focus when the
+    # top edge is anchored, and does not draw its window frame around it. A plain toplevel there gets the
+    # compositor's decoration border around the whole surface, which is what made the box read as a framed
+    # window instead of the panel.
+    "COSMIC",
 }
 
 # Compositors where a launcher is better off as a plain window.
-TOPLEVEL_COMPOSITORS = {"COSMIC", "GNOME"}
+TOPLEVEL_COMPOSITORS = {"GNOME"}
 
 # Measured on a live COSMIC session: a plain toplevel keeps the size the compositor gave it when it was
 # mapped, so the client cannot change it afterwards (a `resize` request and a changed size request are both
@@ -108,11 +113,15 @@ def policy(env: dict, compositor: str) -> str:
 def reason(policy_name: str, compositor: str) -> str:
     """Why this policy, in one line — printed by `esteban doctor`."""
     if policy_name == LAYER_SHELL:
+        if compositor == "COSMIC":
+            return ("cosmic-comp takes the layer surface and does not draw its window frame around it, which is "
+                    "what a box that sizes itself to its content needs there; focus comes from the anchored top "
+                    "edge and the exclusive keyboard mode")
         return "wlr-layer-shell is supported and a launcher keeps keyboard focus as an exclusive surface"
     if policy_name == TOPLEVEL:
         if compositor == "COSMIC":
-            return ("cosmic-comp treats a commit on a roleless surface as a protocol violation and drops the "
-                    "client, so the overlay stays a plain window whose teardown is safe there")
+            return ("asked for with ESTEBAN_SURFACE=toplevel: cosmic-comp draws its own frame around a toplevel, "
+                    "and the size it gives the surface at mapping is the size it keeps")
         if compositor == "GNOME":
             return "Mutter does not implement layer-shell; an undecorated window is the only option"
         return "plain window"

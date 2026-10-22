@@ -245,6 +245,7 @@ def test_panel_corners_depend_on_the_session_alpha():
         launcher = object.__new__(overlay.Launcher)
         launcher.theme, launcher.alpha, launcher.rgba = theme.DEFAULT_THEME, 1.0, rgba
         launcher.results, launcher.max_visible, launcher.query = [], 10, ""   # draw_window asks the content how tall the panel is
+        launcher.shadow_margin = 0
         launcher.draw_window(Alloc(60, 40), cr)
         return surface.get_data()[0]
 
@@ -343,8 +344,8 @@ def test_direct_action_rows():
 
 
 def test_surface_policy():
-    """One policy per compositor (compositor.py): layer-shell on wlroots-derived compositors,
-    a plain window on COSMIC and GNOME, normal window on X11, TUI with no display."""
+    """One policy per compositor (compositor.py): layer-shell on wlroots-derived compositors including COSMIC,
+    a plain window on GNOME, normal window on X11, TUI with no display."""
     from esteban import compositor
 
     def env(**kw):
@@ -353,7 +354,7 @@ def test_surface_policy():
     def policy(**kw):
         return compositor.detect(env(**kw))["policy"]
 
-    assert policy(XDG_CURRENT_DESKTOP="COSMIC", WAYLAND_DISPLAY="wayland-1") == compositor.TOPLEVEL
+    assert policy(XDG_CURRENT_DESKTOP="COSMIC", WAYLAND_DISPLAY="wayland-1") == compositor.LAYER_SHELL
     assert compositor.detect(env(XDG_CURRENT_DESKTOP="COSMIC", WAYLAND_DISPLAY="wayland-1"))["compositor"] == "COSMIC"
     assert policy(HYPRLAND_INSTANCE_SIGNATURE="1", WAYLAND_DISPLAY="wayland-1") == compositor.LAYER_SHELL
     assert policy(SWAYSOCK="/tmp/sway-1", XDG_SESSION_TYPE="wayland") == compositor.LAYER_SHELL
@@ -365,11 +366,13 @@ def test_surface_policy():
     # an unknown Wayland compositor gets layer-shell, and ESTEBAN_SURFACE overrides the choice
     assert policy(WAYLAND_DISPLAY="wayland-1") == compositor.LAYER_SHELL
     assert policy(XDG_CURRENT_DESKTOP="COSMIC", WAYLAND_DISPLAY="wayland-1",
-                  ESTEBAN_SURFACE="layer-shell") == compositor.LAYER_SHELL
+                  ESTEBAN_SURFACE="toplevel") == compositor.TOPLEVEL
 
-    # the COSMIC choice is a safety decision, not a preference: cosmic-comp drops a client that
-    # commits on a surface whose role was already destroyed
-    assert "protocol violation" in compositor.reason(compositor.TOPLEVEL, "COSMIC")
+    # COSMIC is on the layer-shell side because a plain toplevel there gets the compositor's own frame around
+    # the whole surface, so the box reads as a framed window. The surface still cannot be resized after it is
+    # mapped on either kind, which is why overlay.py draws the panel to the content there.
+    assert "window frame" in compositor.reason(compositor.LAYER_SHELL, "COSMIC")
+    assert "COSMIC" in compositor.NO_CLIENT_RESIZE_COMPOSITORS
 
 
 def test_overlay_reports_why_it_cannot_draw():
@@ -1061,6 +1064,7 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
     launcher.query, launcher.mode, launcher.options, launcher.mod_name = "", "search", {}, "Ctrl"
     launcher.sel, launcher.offset, launcher.area = 0, 0, Area()
     launcher.window, launcher.rgba, launcher.alpha = Window(), True, 1.0
+    launcher.shadow_margin = 0
     launcher.panel_width = t["window"]["width"] - 2 * t["window"]["paddingHorizontal"]
     launcher.session = {"compositor": "Sway", "policy": "layer-shell"}
     launcher.follows_content = True
@@ -1086,7 +1090,7 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
     overlay.rounded_rect = lambda cr, x, y, w, h, r: panels.append(h)
     try:
         launcher.draw_window(Widget(), cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, row_h)))
-        assert panels == [box_h + row_h * 2]                              # the panel is the content, not the window
+        assert set(panels) == {box_h + row_h * 2}       # the panel is the content, not the window
     finally:
         overlay.rounded_rect = old_rounded
 
@@ -1106,6 +1110,22 @@ def test_the_box_is_as_tall_as_the_rows_it_shows():
         assert drawn == ["Ctrl+C", "No results"]
     finally:
         overlay.make_layout, overlay.PangoCairo.show_layout = old_layout, old_show
+
+
+def test_the_shadow_has_room_around_the_panel():
+    """`appearance.shadow` is the spread the penumbra needs, so the surface is the measured panel plus the room
+    around it. It is not drawn where the surface cannot blend it: on a session without an RGBA visual an
+    unblended penumbra reads as a filled black frame, which is the black square people complain about."""
+    from esteban import overlay, theme
+
+    launcher = object.__new__(overlay.Launcher)
+    launcher.theme, launcher.rgba = theme.load_theme({}), True
+    launcher.shadow_margin = int(config.DEFAULTS["appearance"]["shadow"])
+    assert launcher.shadow_width() == launcher.shadow_margin
+    assert launcher.surface_width() == launcher.theme["window"]["width"] + 2 * launcher.shadow_margin
+
+    launcher.rgba = False
+    assert launcher.shadow_width() == 0                     # no penumbra without an alpha visual
 
 
 if __name__ == "__main__":

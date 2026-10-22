@@ -2,7 +2,7 @@
 
 A Linux launcher modeled on Alfred 5, built from reverse-engineering evidence of the shipped macOS
 app. Interface: **look-alike overlay** (GTK3, surface kind chosen from the compositor — layer-shell
-on wlroots-derived compositors, plain window on COSMIC and GNOME, normal window on X11) with the
+on wlroots-derived compositors including COSMIC, plain window on GNOME, normal window on X11) with the
 **TUI launcher** as fallback, plus a global hotkey. Language: **Python 3**.
 
 The full analysis — classes, frameworks, files Alfred writes, and the code pointer for every
@@ -249,7 +249,7 @@ The policy is decided once, from the session (`compositor.py`, printed by `esteb
 | Session | Surface | Why |
 |---|---|---|
 | Hyprland, Sway, Wayfire, River, KDE Plasma (KWin), other wlroots-derived compositors | wlr-layer-shell overlay | an exclusive layer surface is the only way a client sits above everything, and it gets keyboard focus when mapped |
-| COSMIC (cosmic-comp) | plain undecorated window | COSMIC does speak wlr-layer-shell, but a commit on a surface whose role was already destroyed is a protocol violation there and the compositor drops the connection — a launcher that hides and re-shows a layer surface can kill itself. Window teardown is fine on COSMIC. |
+| COSMIC (cosmic-comp) | wlr-layer-shell overlay | COSMIC decorates a plain toplevel with its own rounded frame around the whole surface, which is what made the box read as a framed window. Measured on a live COSMIC session: it takes the layer surface, gives it keyboard focus when the top edge is anchored, does not decorate it, and keeps the connection alive across the hide/show cycle the toggle performs. The old caution about committing on a roleless surface still holds — the window is never destroyed after it is unmapped. |
 | GNOME | plain undecorated window | Mutter does not implement layer-shell |
 | X11 | normal undecorated window | no layer-shell protocol |
 | no display session | the TUI in `ui.py` | nothing to draw on |
@@ -260,6 +260,26 @@ Two rules follow from the COSMIC behaviour, and they hold on every compositor: a
 never destroyed after it has been unmapped, and quitting leaves the main loop instead of destroying
 the window — closing the display connection ends the session cleanly, so no commit is ever sent on
 a roleless surface.
+
+The box is as tall as the rows it shows: `visible_rows()` is min(`numberOfRows`, `_maxVisibleRows`),
+which is what `calculateSearchFieldHeight` 0x968e0 and the row height 0x96a80 add up to. On a compositor
+that honours a client resize the window follows that height. On COSMIC it does not (measured on a live
+session, on both surface kinds): the surface keeps the size it had when it was mapped, so there the box
+is mapped with room for `maxVisibleRows` and the panel is drawn only over the content, which is what makes
+the visible box still grow and shrink with the results. The fixed area is the one thing the workaround
+cannot fix: a layer surface takes pointer input over its whole area, so a click in the transparent part
+below the panel does not reach the window behind it on COSMIC.
+
+### The panel as a card
+
+Nothing on Linux blurs the wallpaper behind the panel, so the measured colour alone reads as a flat shape
+pasted on the screen rather than a card floating above it. `appearance.shadow` is the spread around the
+panel (16 px, 0 turns it off); cairo has no blur, so the penumbra is built from rings of rounded rectangles,
+outermost and faintest first, that pile up towards the edge. When the theme's `borderPadding` is 0 the panel
+edge gets a 1 px hairline, because a panel with no decoration around it reads better with one. Both are look
+choices, not evidence: the colours, padding, roundness and row geometry stay as measured, and the surface is
+the measured panel width plus the room the penumbra needs. Without an RGBA visual the shadow is not drawn at
+all, because an unblended penumbra is a filled black frame.
 
 ### Transparency
 
@@ -295,9 +315,10 @@ Two other things that read as "bad" and are worth checking on a COSMIC session:
   panel looks like a black box rather than a translucent one. `overlay.py` asks for
   `Gdk.Screen.get_rgba_visual()` and, when the session has none, draws the panel opaque and says so
   instead of drawing black. A Wayland surface has to carry alpha for any translucency at all.
-- **The compositor's decoration.** An undecorated GTK3 window on COSMIC still gets the compositor's own
-  rounded corners, shadow and active hint, which can double up with the 32 px radius drawn here. A client
-  cannot change that; an opaque panel is what removes the visible mismatch.
+- **The compositor's decoration.** An undecorated GTK3 toplevel on COSMIC still gets the compositor's own
+  rounded corners, outline and active hint around the whole surface, which doubles up with the 32 px radius
+  drawn here and makes the box look like a framed window. A client cannot turn that off on a toplevel, so
+  COSMIC is on the layer-shell side of the policy table: a layer surface is not decorated.
 - **The system theme painting over the rows.** COSMIC themes GTK3 apps, so a `DrawingArea` that is not
   app-paintable receives the theme's opaque background — a solid block inside the panel, with the panel
   colour only around it. The rows area is app-paintable with a transparent CSS background, so the panel is
@@ -401,11 +422,10 @@ Restart=on-failure
 WantedBy=default.target
 ```
 
-On wlroots compositors (Hyprland, Sway, KWin, Wayfire) an exclusive layer-shell surface receives
-keyboard focus when it is mapped, so hiding and re-showing it keeps the typing path working. On
-COSMIC and GNOME the overlay is an ordinary window and focus follows the usual window rules; on
-COSMIC the window manager may place it as a tile, so `Super+G` (toggle floating) is what makes it
-behave like an overlay.
+On wlroots compositors (Hyprland, Sway, KWin, Wayfire, COSMIC) an exclusive layer-shell surface receives
+keyboard focus when it is mapped, so hiding and re-showing it keeps the typing path working — measured on a
+live COSMIC session, where the focus events arrive again after each hide/show cycle. On GNOME the overlay is
+an ordinary window and focus follows the usual window rules.
 
 ### GUI keys
 
@@ -432,8 +452,9 @@ Twenty-three tests pass: fuzzy LIKE builder, calculator, placeholder formats, us
 count, strong latching, 30-day window), clipboard behaviours (dedupe, fastAppend, limit, moveToTopOnUse,
 persistence), the workflow `info.plist` / script-filter item contract, the theme geometry formulas, the
 action numbers and the visible-row mapping for number keys, the surface policy per compositor (COSMIC and
-GNOME get a plain window, wlroots-derived compositors get layer-shell, X11 a normal window, no display the
-TUI), the reason the results box reports when it cannot be drawn, the typelib lookup `doctor` prints, the
+the other wlroots-derived compositors get layer-shell, GNOME a plain window, X11 a normal window, no display
+the TUI), the panel height following the visible rows and the drawn panel on a compositor that cannot
+resize a mapped surface, the shadow room, the reason the results box reports when it cannot be drawn, the typelib lookup `doctor` prints, the
 panel alpha override, the COSMIC keybind entry (lowercase keysym names, one-string `Spawn`, comma-separated
 entries) and its writer (RON map only, existing entries kept, nothing left beside the settings file), the
 launcher path being a real file when nothing is installed, the toggle IPC round-trip, the row contract shared
@@ -449,8 +470,8 @@ body a file copy puts on the clipboard, and the fact that a missing helper print
   callback; the compositor keybinding + socket replaces Carbon `RegisterEventHotKey`;
   `xdotool`/`ydotool` replace CGEvent posting.
 - The overlay is a GTK window; there is no `NSVisualEffectView` blur equivalent, so the theme's
-  window colour alpha is used as-is. Layer-shell surfaces are supported on Hyprland, Sway, KWin
-  and Wayfire, not on GNOME.
+  window colour alpha is used as-is and the panel is given a soft shadow instead. Layer-shell
+  surfaces are supported on the wlroots-derived compositors (including COSMIC), not on GNOME.
 - Scoring constants and tier order are inferences from the observed query tiers and match fields;
   they are documented as inference in the module docstrings.
 - Crash handling is defensive: missing PyGObject, no RGBA visual, no display, non-tty stdin,
@@ -458,8 +479,8 @@ body a file copy puts on the clipboard, and the fact that a missing helper print
   and an already-running instance each print one clear line instead of a traceback.
   `ESTEBAN_DEBUG=1` keeps the full traceback when you want it, and `esteban doctor`
   reports what the machine is missing.
-- What still needs a real session to verify: the overlay itself. On COSMIC the two things to check
-  are that hide → show cycles do not drop the Wayland connection (the toplevel policy exists to keep
-  that off the layer-shell path), and that the custom shortcut runs `esteban toggle` while an
-  instance is listening. `esteban doctor` first, then `esteban`, then a few hide/show
-  cycles.
+- What still needs a real session to look at: the box itself. Measured on a live COSMIC session, the layer
+  surface is accepted, focus arrives on the first show and again after every hide/show cycle, and the
+  connection survives the cycles. What a script cannot measure is the pixels: Wayland gives no way to
+  synthesize the key (no `ydotool`, `/dev/uinput` is root-only) and no screenshot tool, so the look is
+  confirmed by pressing the hotkey. `esteban doctor` first, then `esteban`, then a few hide/show cycles.

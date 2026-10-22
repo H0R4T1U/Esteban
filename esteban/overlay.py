@@ -258,6 +258,20 @@ def one_line(text: str) -> str:
     return " ".join((text or "").split())
 
 
+def soft_shadow(cr, x, y, w, h, radius, spread, peak: float = 0.42, steps: int = 12):
+    """The penumbra around the panel.
+
+    Cairo has no blur, so it is built from rings of rounded rectangles, outermost and faintest first, that
+    pile up towards the panel edge. Drawing them outward-in is what makes the accumulated alpha fall off
+    smoothly instead of reading as a stack of hard outlines.
+    """
+    for step in range(steps, 0, -1):
+        offset = spread * step / steps
+        cr.set_source_rgba(0, 0, 0, peak * ((steps - step) / steps) ** 1.8)
+        rounded_rect(cr, x - offset, y - offset, w + 2 * offset, h + 2 * offset, radius + offset)
+        cr.fill()
+
+
 def make_layout(cr, spec: dict):
     layout = PangoCairo.create_layout(cr)
     layout.set_font_description(font_description(spec))
@@ -306,6 +320,7 @@ class Launcher:
         self.mod_mask = Gdk.ModifierType.CONTROL_MASK if self.mod_name == "Ctrl" else Gdk.ModifierType.MOD4_MASK
         self.pixbuf_cache = {}
         self.rgba = False                       # set by build(), draw_window uses it for the corners
+        self.shadow_margin = int(cfg["appearance"].get("shadow", 0))   # 0 on a session that cannot blend it
         self.server = None
 
         window = self.theme["window"]
@@ -339,15 +354,13 @@ class Launcher:
                                    0 if self.follows_content else theme.row_height(self.theme) * self.max_visible)
 
         # `search.spacing` (8 px) is the measured gap between the field and the first row; the window
-        # padding (11 x 12) is the content inset, so nothing sits flush against the panel edge.
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=self.theme["search"]["spacing"])
-        box.set_margin_top(window["paddingVertical"])
-        box.set_margin_bottom(window["paddingVertical"])
-        box.set_margin_start(window["paddingHorizontal"])
-        box.set_margin_end(window["paddingHorizontal"])
-        box.pack_start(self.entry, False, False, 0)
-        box.pack_start(self.area, False, False, 0)
-        self.window.add(box)
+        # padding (11 x 12) is the content inset, so nothing sits flush against the panel edge. The shadow
+        # spread is added on top of it because the panel itself is drawn inset by the shadow.
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=self.theme["search"]["spacing"])
+        self.apply_margins()
+        self.box.pack_start(self.entry, False, False, 0)
+        self.box.pack_start(self.area, False, False, 0)
+        self.window.add(self.box)
 
         self.window.connect("draw", self.draw_window)
         self.window.connect("key-press-event", self.on_key)
@@ -369,6 +382,8 @@ class Launcher:
             self.alpha = 1.0
             warn("this session has no RGBA visual, so the panel is drawn opaque")
         self.apply_css()
+        self.apply_margins()
+        self.window.set_size_request(self.surface_width(), -1)
         if self.policy == compositor.LAYER_SHELL and HAVE_SHELL and GtkLayerShell.is_supported():
             self.use_layer_shell()
         else:
@@ -388,11 +403,16 @@ class Launcher:
         provider.load_from_data(
             (".esteban-search { font-family: \"%s\"; font-size: %dpx; padding: %dpx %dpx; "
              "background-color: transparent; color: %s; caret-color: %s; border: none; }\n"
+              # The placeholder is the box's quiet voice: with the field empty it should read as the muted
+              # subtext colour, not as text that has already been typed. GTK3 draws it on its own node, so the
+              # rule is simply ignored on a version that does not have one.
+              ".esteban-search placeholder { color: %s; }\n"
               ".esteban-rows { background-color: transparent; border: none; }\n"
              % (search["text"].get("font") or "Sans", search["text"]["size"],
                 search["paddingVertical"], search["paddingHorizontal"],
                 theme.css_color(search["text"]["color"]),
-                theme.css_color(search["text"]["colorSelected"]))).encode())
+                theme.css_color(search["text"]["colorSelected"]),
+                theme.css_color(self.theme["result"]["subtext"]["color"]))).encode())
         self.entry.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.entry.get_style_context().add_class("esteban-search")
         self.area.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -411,8 +431,11 @@ class Launcher:
             pass
 
         width, height = self.monitor_size() or (0, 0)
-        margin = int(self.cfg["appearance"].get("position", {}).get("margin", 140))
-        left = max(0, (width - self.theme["window"]["width"]) // 2)
+        position = self.cfg["appearance"].get("position", {})
+        # The margin is measured to the panel, not to the surface: the shadow spread sits between the anchor
+        # edge and the panel that is drawn.
+        margin = int(position.get("margin", 140)) + self.shadow_width()
+        left = max(0, (width - self.surface_width()) // 2)
         GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.TOP, margin)
         GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.LEFT, left)
 
@@ -446,6 +469,25 @@ class Launcher:
             rows = 1                        # a typed query that matches nothing keeps one row of height
         return rows
 
+    def apply_margins(self) -> None:
+        """The content inset is the theme padding plus the shadow spread, because the panel the content sits
+        on is itself drawn inset by the shadow."""
+        t = self.theme["window"]
+        inset = self.shadow_width()
+        self.box.set_margin_top(inset + t["paddingVertical"])
+        self.box.set_margin_bottom(inset + t["paddingVertical"])
+        self.box.set_margin_start(inset + t["paddingHorizontal"])
+        self.box.set_margin_end(inset + t["paddingHorizontal"])
+
+    def shadow_width(self) -> int:
+        """The shadow only exists where the surface can blend it; without an RGBA visual the penumbra would
+        read as a filled black frame."""
+        return self.shadow_margin if self.rgba else 0
+
+    def surface_width(self) -> int:
+        """The surface is the panel the theme measures (609) plus the room the shadow needs around it."""
+        return self.theme["window"]["width"] + 2 * self.shadow_width()
+
     def content_height(self) -> int:
         """The height the content needs: paddings + the field + the gap + the rows it shows."""
         t = self.theme
@@ -455,10 +497,9 @@ class Launcher:
     def draw_window(self, widget, cr):
         t = self.theme["window"]
         w, h = widget.get_allocated_width(), widget.get_allocated_height()
-        if self.rgba:
-            # Only the part the content fills is painted, so the box reads as the search field plus the rows
-            # it has rather than a tall empty panel: the rest of the surface stays transparent.
-            h = min(h, self.content_height())
+        inset = self.shadow_width()
+        panel_w = w - 2 * inset
+        panel_h = min(h - inset, self.content_height())   # the panel is as tall as the rows it shows
         r, g, b, _ = theme.parse_color(t["color"])
         cr.set_source_rgba(r, g, b, self.alpha)
         if self.alpha >= 1.0 and not self.rgba:
@@ -470,11 +511,20 @@ class Launcher:
         else:
             # With an RGBA visual the corner pixels really are transparent, so the panel keeps the
             # roundness the theme JSON measures (32) instead of reading as a sharp rectangle.
-            rounded_rect(cr, 0, 0, w, h, t["roundness"])
+            if inset:
+                soft_shadow(cr, inset, inset, panel_w, panel_h, t["roundness"], inset)
+            rounded_rect(cr, inset, inset, panel_w, panel_h, t["roundness"])
             cr.fill()
+            if not t.get("borderPadding"):
+                # A hairline along the edge. Not from the theme JSON (borderPadding is 0 in it): on Linux the
+                # panel sits on the wallpaper with nothing blurring it, and the edge reads better with one.
+                cr.set_source_rgba(1, 1, 1, 0.07)
+                rounded_rect(cr, inset, inset, panel_w, panel_h, t["roundness"])
+                cr.set_line_width(1)
+                cr.stroke()
         if t.get("borderPadding"):
             cr.set_source_rgba(*theme.parse_color(t["borderColor"]))
-            rounded_rect(cr, 0, 0, w, h, t["roundness"])
+            rounded_rect(cr, inset, inset, panel_w, panel_h, t["roundness"])
             cr.set_line_width(t["borderPadding"])
             cr.stroke()
         return False                       # the entry and the rows draw on top
@@ -505,7 +555,7 @@ class Launcher:
         if self.follows_content:
             self.area.set_size_request(self.panel_width, theme.row_height(self.theme) * self.visible_rows())
         try:
-            self.window.resize(self.theme["window"]["width"], self.content_height())
+            self.window.resize(self.surface_width(), self.content_height() + 2 * self.shadow_width())
         except Exception:
             pass
         self.area.queue_draw()
